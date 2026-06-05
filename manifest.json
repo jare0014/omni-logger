@@ -1,0 +1,10 @@
+{
+  "id": "omni-logger",
+  "name": "Omni-Logger",
+  "version": "1.0.0",
+  "minAppVersion": "0.15.0",
+  "description": "Consolidated OCR screenshot paste logging and Google Health API data synchronizer.",
+  "author": "Alex Jarecki",
+  "authorUrl": "",
+  "isDesktopOnly": true
+}

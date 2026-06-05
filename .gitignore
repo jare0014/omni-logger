@@ -1,0 +1,16 @@
+__pycache__/
+*.pyc
+data.json
+token.json
+credentials.json
+keep_credentials.json
+config.json
+settings.cfg
+.env
+*.log
+venv/
+env/
+.venv/
+import/
+mdfiles/
+00_Imports/
