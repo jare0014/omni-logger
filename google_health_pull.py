@@ -11,7 +11,6 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 import requests
 import tkinter as tk
 from tkinter import ttk, messagebox
-
 import datetime
 
 TOKEN_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "token.json")
@@ -21,6 +20,9 @@ FALLBACK_TOKEN_PATH = os.path.join(
     "token.json"
 )
 
+FITBIT_TOKEN_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fitbit_token.json")
+
+# --- GOOGLE OAUTH ACCESS ---
 def get_google_access_token():
     token_path = TOKEN_PATH
     if not os.path.exists(token_path):
@@ -76,21 +78,18 @@ def get_google_access_token():
         raise RuntimeError(f"Failed to refresh Google Health access token: {res.text}")
 
 def get_google_health_data(token, date_str):
-    date_dt = datetime.datetime.strptime(date_str, "%Y-%m-%d")
+    headers = {"Authorization": f"Bearer {token}"}
     
-    # Start time is 12:00:00 PM of the previous day
+    date_dt = datetime.datetime.strptime(date_str, "%Y-%m-%d")
     start_dt = date_dt - datetime.timedelta(days=1)
     start_dt = start_dt.replace(hour=12, minute=0, second=0, microsecond=0)
-    
-    # End time is 11:59:59.999 PM of the target day
-    end_dt = date_dt.replace(hour=23, minute=59, second=59, microsecond=999999)
+    end_dt = date_dt.replace(hour=12, minute=0, second=0, microsecond=0)
     
     start_iso = start_dt.isoformat() + "Z"
     end_iso = end_dt.isoformat() + "Z"
     
-    url = f"https://www.googleapis.com/fitness/v1/users/me/sessions?activityType=72&startTime={start_iso}&endTime={end_iso}"
-    
-    headers = {"Authorization": f"Bearer {token}"}
+    sleep_filter = f'sleep.interval.end_time >= "{start_iso}" AND sleep.interval.end_time < "{end_iso}"'
+    sleep_url = f"https://health.googleapis.com/v4/users/me/dataTypes/sleep/dataPoints?filter={urllib.parse.quote(sleep_filter)}"
     
     results = {
         "wake_up": None,
@@ -100,38 +99,209 @@ def get_google_health_data(token, date_str):
         "alcohol": None
     }
     
-    try:
-        res = requests.get(url, headers=headers, timeout=10)
-        if res.status_code == 200:
-            data = res.json()
-            sessions = data.get("session", [])
-            if sessions:
-                main_sleep = sessions[0]
-                max_duration = int(main_sleep.get("endTimeMillis", 0)) - int(main_sleep.get("startTimeMillis", 0))
-                
-                for s in sessions[1:]:
-                    dur = int(s.get("endTimeMillis", 0)) - int(s.get("startTimeMillis", 0))
-                    if dur > max_duration:
-                        max_duration = dur
-                        main_sleep = s
-                        
-                start_millis = int(main_sleep.get("startTimeMillis", 0))
-                end_millis = int(main_sleep.get("endTimeMillis", 0))
-                
-                total_minutes = (end_millis - start_millis) // 60000
-                hours = total_minutes // 60
-                mins = total_minutes % 60
-                results["Sleep_hours"] = f"{hours}:{mins:02d}"
-                
-                wake_up_dt = datetime.datetime.fromtimestamp(end_millis / 1000.0)
-                results["wake_up"] = f"{wake_up_dt.hour}:{wake_up_dt.minute:02d}"
-        else:
-            raise RuntimeError(f"Google Fit API returned status {res.status_code}: {res.text}")
-    except Exception as e:
-        print(f"Error: Google Health sleep fetch failed: {e}")
-        raise
+    # 1. Fetch Sleep
+    res = requests.get(sleep_url, headers=headers, timeout=10)
+    if res.status_code == 200:
+        data = res.json()
+        points = data.get("dataPoints", [])
+        if points:
+            # Sort points by end_time descending
+            points.sort(key=lambda p: p.get("sleep", {}).get("interval", {}).get("endTime", ""), reverse=True)
+            main_sleep = points[0].get("sleep", {})
+            
+            total_mins = int(main_sleep.get("summary", {}).get("minutesAsleep", 0))
+            hours = total_mins // 60
+            mins = total_mins % 60
+            results["Sleep_hours"] = f"{hours}:{mins:02d}"
+            
+            end_time_str = main_sleep.get("interval", {}).get("endTime", "")
+            if end_time_str:
+                if end_time_str.endswith("Z"):
+                    end_time_str = end_time_str[:-1]
+                try:
+                    dt = datetime.datetime.fromisoformat(end_time_str)
+                    utc_ts = dt.replace(tzinfo=datetime.timezone.utc).timestamp()
+                    local_dt = datetime.datetime.fromtimestamp(utc_ts)
+                    results["wake_up"] = f"{local_dt.hour}:{local_dt.minute:02d}"
+                except Exception as e:
+                    print(f"Warning: failed to parse end time: {e}")
+    else:
+        raise RuntimeError(f"Google Health API Sleep endpoint returned status {res.status_code}: {res.text}")
+        
+    # 2. Fetch HRV
+    next_dt = date_dt + datetime.timedelta(days=1)
+    next_date_str = next_dt.strftime("%Y-%m-%d")
+    hrv_filter = f'daily_heart_rate_variability.date >= "{date_str}" AND daily_heart_rate_variability.date < "{next_date_str}"'
+    hrv_url = f"https://health.googleapis.com/v4/users/me/dataTypes/daily-heart-rate-variability/dataPoints?filter={urllib.parse.quote(hrv_filter)}"
+    
+    res = requests.get(hrv_url, headers=headers, timeout=10)
+    if res.status_code == 200:
+        data = res.json()
+        points = data.get("dataPoints", [])
+        if points:
+            val = points[0].get("dailyHeartRateVariability", {}).get("averageHeartRateVariabilityMilliseconds", 0)
+            if not val:
+                val = points[0].get("dailyHeartRateVariability", {}).get("deepSleepRootMeanSquareOfSuccessiveDifferencesMilliseconds", 0)
+            results["HRV"] = round(val)
+    else:
+        print(f"Warning: Google Health API HRV endpoint returned status {res.status_code}: {res.text}")
         
     return results
+
+
+# --- FITBIT ACCESS & REFRESH ---
+def load_fitbit_credentials():
+    # 1. Environment variables (Stateless execution inside Obsidian plugin)
+    client_id = os.environ.get("FITBIT_CLIENT_ID")
+    if client_id:
+        return {
+            "client_id": client_id,
+            "client_secret": os.environ.get("FITBIT_CLIENT_SECRET"),
+            "access_token": os.environ.get("FITBIT_ACCESS_TOKEN"),
+            "refresh_token": os.environ.get("FITBIT_REFRESH_TOKEN"),
+            "expiry_timestamp": float(os.environ.get("FITBIT_EXPIRY") or 0)
+        }
+        
+    # 2. Local token file (manual/testing mode)
+    if os.path.exists(FITBIT_TOKEN_PATH):
+        with open(FITBIT_TOKEN_PATH, "r", encoding="utf-8") as f:
+            return json.load(f)
+            
+    raise FileNotFoundError(
+        "Fitbit credentials not found in environment or on disk. Please configure Fitbit in settings first."
+    )
+
+def refresh_fitbit_token(creds):
+    current_time = time.time()
+    expiry = creds.get("expiry_timestamp", 0)
+    
+    # Refresh token if within 60 seconds of expiration
+    if current_time >= expiry - 60:
+        client_id = creds["client_id"]
+        client_secret = creds["client_secret"]
+        refresh_token = creds["refresh_token"]
+        
+        encoded = base64.b64encode(f"{client_id}:{client_secret}".encode()).decode()
+        headers = {
+            "Authorization": f"Basic {encoded}",
+            "Content-Type": "application/x-www-form-urlencoded"
+        }
+        data = {
+            "grant_type": "refresh_token",
+            "refresh_token": refresh_token
+        }
+        
+        res = requests.post("https://api.fitbit.com/oauth2/token", headers=headers, data=data, timeout=10)
+        if res.status_code == 200:
+            res_data = res.json()
+            creds["access_token"] = res_data["access_token"]
+            creds["refresh_token"] = res_data["refresh_token"]
+            creds["expiry_timestamp"] = time.time() + res_data["expires_in"]
+            
+            # Save updated credentials
+            if os.environ.get("FITBIT_CLIENT_ID"):
+                # Output to stdout so parent JS plugin can swallow updated credentials into secure keychain
+                print(f"JSON_OUTPUT: {json.dumps(creds)}")
+            else:
+                with open(FITBIT_TOKEN_PATH, "w", encoding="utf-8") as f:
+                    json.dump(creds, f, indent=2)
+        else:
+            raise RuntimeError(f"Failed to refresh Fitbit token: {res.text}")
+            
+    return creds
+
+def get_fitbit_data(creds, date_str):
+    access_token = creds["access_token"]
+    headers = {"Authorization": f"Bearer {access_token}"}
+    
+    date_dt = datetime.datetime.strptime(date_str, "%Y-%m-%d")
+    yesterday_dt = date_dt - datetime.timedelta(days=1)
+    yesterday_str = yesterday_dt.strftime("%Y-%m-%d")
+    
+    results = {
+        "wake_up": None,
+        "Sleep_hours": None,
+        "HRV": None,
+        "caffeine": None,
+        "alcohol": None
+    }
+    
+    # 1. Fetch Sleep
+    try:
+        sleep_url = f"https://api.fitbit.com/1.2/user/-/sleep/date/{date_str}.json"
+        res = requests.get(sleep_url, headers=headers, timeout=10)
+        if res.status_code == 200:
+            sleep_data = res.json()
+            sleep_logs = sleep_data.get("sleep", [])
+            if sleep_logs:
+                main_sleep = None
+                for log in sleep_logs:
+                    if log.get("isMainSleep", True):
+                        main_sleep = log
+                        break
+                if not main_sleep:
+                    main_sleep = sleep_logs[0]
+                
+                # Sleep Hours (H:MM)
+                min_asleep = main_sleep.get("minutesAsleep", 0)
+                hours = int(min_asleep // 60)
+                mins = int(min_asleep % 60)
+                results["Sleep_hours"] = f"{hours}:{mins:02d}"
+                
+                # Wake Up (endTime format YYYY-MM-DDTHH:MM:SS.000)
+                end_time_str = main_sleep.get("endTime", "")
+                if end_time_str and "T" in end_time_str:
+                    time_part = end_time_str.split("T")[1][:5]
+                    hours_str, mins_str = time_part.split(":")
+                    results["wake_up"] = f"{int(hours_str)}:{mins_str}"
+        else:
+            print(f"Fitbit Sleep API status code: {res.status_code}, Body: {res.text}")
+    except Exception as e:
+        print(f"Warning: Sleep pull failed: {e}")
+        
+    # 2. Fetch HRV
+    try:
+        hrv_url = f"https://api.fitbit.com/1/user/-/hrv/date/{date_str}.json"
+        res = requests.get(hrv_url, headers=headers, timeout=10)
+        if res.status_code == 200:
+            hrv_data = res.json()
+            hrv_logs = hrv_data.get("hrv", [])
+            if hrv_logs:
+                val_obj = hrv_logs[0].get("value", {})
+                results["HRV"] = round(val_obj.get("dailyRmssd", val_obj.get("rmssd", 0)))
+    except Exception as e:
+        print(f"Warning: HRV pull failed: {e}")
+        
+    # 3. Fetch Nutrition (yesterday)
+    try:
+        food_url = f"https://api.fitbit.com/1/user/-/foods/log/date/{yesterday_str}.json"
+        res = requests.get(food_url, headers=headers, timeout=10)
+        if res.status_code == 200:
+            food_data = res.json()
+            
+            caffeine_kws = ["coffee", "espresso", "latte", "caffeine", "tea", "energy drink", "cappuccino", "macchiato", "cold brew"]
+            alcohol_kws = ["beer", "wine", "whiskey", "vodka", "cider", "alcohol", "rum", "gin", "cocktail", "tequila", "sake", "champagne", "bourbon", "ipa", "ale", "stout", "liqueur"]
+            
+            caffeine_count = 0.0
+            alcohol_count = 0.0
+            
+            for log in food_data.get("foods", []):
+                logged_food = log.get("loggedFood", {})
+                name = logged_food.get("name", "").lower()
+                amount = log.get("amount", 1.0)
+                
+                if any(kw in name for kw in caffeine_kws):
+                    caffeine_count += amount
+                elif any(kw in name for kw in alcohol_kws):
+                    alcohol_count += amount
+            
+            results["caffeine"] = round(caffeine_count)
+            results["alcohol"] = round(alcohol_count)
+    except Exception as e:
+        print(f"Warning: Nutrition logs pull failed: {e}")
+        
+    return results
+
 
 # --- FRONTMATTER HANDLERS ---
 def parse_frontmatter(content):
@@ -182,12 +352,14 @@ def update_frontmatter(content, updates):
     new_fm_text = "\n".join(new_lines)
     return f"---\n{new_fm_text}\n---" + content[match.end():]
 
+
 # --- TKINTER GUI ---
 class CheckInApp(tk.Tk):
     def __init__(self, file_path, date_str):
         super().__init__()
         self.file_path = file_path
         self.date_str = date_str
+        self.api_type = os.environ.get("DATA_SOURCE_API", "google-health").lower()
         
         self.title("Daily Check-In")
         self.geometry("380x520")
@@ -202,10 +374,12 @@ class CheckInApp(tk.Tk):
         
         self.configure(bg=self.bg_color)
         
+        loading_text = "Getting Fitbit data...\nPlease wait..." if self.api_type == "fitbit" else "Getting Google Health data...\nPlease wait..."
+        
         # Loading view
         self.loading_label = tk.Label(
             self, 
-            text="Getting Google Health data...\nPlease wait...", 
+            text=loading_text, 
             fg=self.fg_color, 
             bg=self.bg_color, 
             font=("Helvetica", 14, "bold")
@@ -217,18 +391,42 @@ class CheckInApp(tk.Tk):
         
     def fetch_data(self):
         try:
-            token = get_google_access_token()
-            self.fitbit_data = get_google_health_data(token, self.date_str)
-            self.after(0, self.render_form)
+            if self.api_type == "fitbit":
+                creds = load_fitbit_credentials()
+                refreshed_creds = refresh_fitbit_token(creds)
+                self.fitbit_data = get_fitbit_data(refreshed_creds, self.date_str)
+            else:
+                token = get_google_access_token()
+                self.fitbit_data = get_google_health_data(token, self.date_str)
+            
+            if not self.fitbit_data.get("Sleep_hours"):
+                self.after(0, self.handle_no_data)
+            else:
+                self.after(0, self.render_form)
         except Exception as e:
             err_str = str(e)
             self.after(0, lambda: self.handle_fetch_error(err_str))
             
+    def handle_no_data(self):
+        self.loading_label.pack_forget()
+        provider_name = "Fitbit" if self.api_type == "fitbit" else "Google Health"
+        info_lbl = tk.Label(
+            self, 
+            text=f"{provider_name} Sync: Success,\nbut no sleep data found for today.\n\nOpening manual entry...", 
+            fg="#f9e2af", 
+            bg=self.bg_color, 
+            font=("Helvetica", 11)
+        )
+        info_lbl.pack(expand=True)
+        self.fitbit_data = {}
+        self.after(2000, lambda: [info_lbl.pack_forget(), self.render_form()])
+            
     def handle_fetch_error(self, err_msg):
         self.loading_label.pack_forget()
+        provider_name = "Fitbit" if self.api_type == "fitbit" else "Google Health"
         err_lbl = tk.Label(
             self, 
-            text=f"Google Health Sync Unavailable:\n{err_msg}\n\nLoading manual entry...", 
+            text=f"{provider_name} Sync Unavailable:\n{err_msg[:80]}\n\nLoading manual entry...", 
             fg="#f38ba8", 
             bg=self.bg_color, 
             font=("Helvetica", 11)
@@ -308,7 +506,7 @@ class CheckInApp(tk.Tk):
             if start_val == "-":
                 start_val = ""
                 
-            # If blank, fallback to Fitbit fetched data
+            # If blank, fallback to Fitbit/Google Fit fetched data
             if not start_val and fitbit_key and self.fitbit_data.get(fitbit_key) is not None:
                 start_val = str(self.fitbit_data[fitbit_key])
                 
@@ -355,7 +553,7 @@ def main():
     arg = sys.argv[1]
     
     if arg == "--login":
-        print("Google OAuth is handled directly in the Obsidian settings tab. Please configure it there.")
+        print("OAuth is handled directly in the Obsidian settings tab. Please configure it there.")
         sys.exit(0)
         
     if not os.path.exists(arg):

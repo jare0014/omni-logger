@@ -450,7 +450,8 @@ class OmniLoggerPlugin extends obsidian.Plugin {
                     const now = new Date();
                     const startTime = new Date();
                     startTime.setDate(now.getDate() - 1);
-                    const url = `https://www.googleapis.com/fitness/v1/users/me/sessions?activityType=72&startTime=${startTime.toISOString()}&endTime=${now.toISOString()}`;
+                    const filter = `sleep.interval.end_time >= "${startTime.toISOString()}" AND sleep.interval.end_time <= "${now.toISOString()}"`;
+                    const url = `https://health.googleapis.com/v4/users/me/dataTypes/sleep/dataPoints?filter=${encodeURIComponent(filter)}&pageSize=1`;
                     const res = await requestWithTimeout({
                         url: url,
                         method: 'GET',
@@ -530,7 +531,7 @@ class OmniLoggerPlugin extends obsidian.Plugin {
                     const child_process = require('child_process');
                     const env = Object.assign({}, process.env, { NOTEBOOKLM_AUTH_JSON: sessionJson });
                     const isOk = await new Promise((resolve) => {
-                        child_process.exec('notebooklm list --json', { env: env, timeout: 5000 }, (err, stdout, stderr) => {
+                        child_process.exec('notebooklm list --json', { env: env, timeout: 10000 }, (err, stdout, stderr) => {
                             const output = (stdout || '') + (stderr || '');
                             if (err || output.toLowerCase().includes('not logged in') || output.toLowerCase().includes('expired')) {
                                 resolve(false);
@@ -743,13 +744,18 @@ class OmniLoggerPlugin extends obsidian.Plugin {
         startTime.setHours(12, 0, 0, 0);
         
         const endTime = new Date();
-        endTime.setHours(23, 59, 59, 999);
+        endTime.setHours(12, 0, 0, 0);
         
-        const url = `https://www.googleapis.com/fitness/v1/users/me/sessions?activityType=72&startTime=${startTime.toISOString()}&endTime=${endTime.toISOString()}`;
+        const startIso = startTime.toISOString();
+        const endIso = endTime.toISOString();
         
-        console.log(`Pulling Google sleep sessions: ${url}`);
+        // 1. Fetch Sleep
+        const filter = `sleep.interval.end_time >= "${startIso}" AND sleep.interval.end_time < "${endIso}"`;
+        const sleepUrl = `https://health.googleapis.com/v4/users/me/dataTypes/sleep/dataPoints?filter=${encodeURIComponent(filter)}`;
+        
+        console.log(`Pulling Google Health sleep data: ${sleepUrl}`);
         const response = await obsidian.requestUrl({
-            url: url,
+            url: sleepUrl,
             method: 'GET',
             headers: {
                 'Authorization': `Bearer ${token}`
@@ -757,41 +763,70 @@ class OmniLoggerPlugin extends obsidian.Plugin {
         });
         
         if (response.status !== 200) {
-            throw new Error(`Google Fit API returned status ${response.status}: ${response.text}`);
+            throw new Error(`Google Health API returned status ${response.status}: ${response.text}`);
         }
         
         const data = response.json;
-        const sessions = data.session || [];
+        const points = data.dataPoints || [];
         
-        if (sessions.length === 0) {
-            throw new Error("No sleep sessions found for today in Google Health/Fit API.");
+        if (points.length === 0) {
+            throw new Error("No sleep data found in Google Health/Fit for today (last data was May 17). Please verify your device is syncing to Google Fit.");
         }
         
-        let mainSleep = sessions[0];
-        let maxDuration = parseInt(mainSleep.endTimeMillis) - parseInt(mainSleep.startTimeMillis);
+        // Sort points by end_time descending
+        points.sort((a, b) => new Date(b.sleep.interval.endTime) - new Date(a.sleep.interval.endTime));
+        const mainSleep = points[0].sleep;
         
-        for (let i = 1; i < sessions.length; i++) {
-            const dur = parseInt(sessions[i].endTimeMillis) - parseInt(sessions[i].startTimeMillis);
-            if (dur > maxDuration) {
-                maxDuration = dur;
-                mainSleep = sessions[i];
-            }
-        }
-        
-        const startMillis = parseInt(mainSleep.startTimeMillis);
-        const endMillis = parseInt(mainSleep.endTimeMillis);
-        const totalMinutes = Math.floor((endMillis - startMillis) / 60000);
+        const totalMinutes = mainSleep.summary ? parseInt(mainSleep.summary.minutesAsleep || 0, 10) : 0;
         const hours = Math.floor(totalMinutes / 60);
         const mins = totalMinutes % 60;
         const sleepHoursStr = `${hours}:${String(mins).padStart(2, '0')}`;
         
-        const wakeUpDate = new Date(endMillis);
+        const wakeUpDate = new Date(mainSleep.interval.endTime);
         const wakeUpStr = `${wakeUpDate.getHours()}:${String(wakeUpDate.getMinutes()).padStart(2, '0')}`;
         
         const updates = {
             "Sleep_hours": sleepHoursStr,
             "wake_up": wakeUpStr
         };
+        
+        // 2. Fetch HRV
+        const year = now.getFullYear();
+        const month = String(now.getMonth() + 1).padStart(2, '0');
+        const day = String(now.getDate()).padStart(2, '0');
+        const dateStr = `${year}-${month}-${day}`;
+        
+        const nextDate = new Date(now);
+        nextDate.setDate(now.getDate() + 1);
+        const nextYear = nextDate.getFullYear();
+        const nextMonth = String(nextDate.getMonth() + 1).padStart(2, '0');
+        const nextDay = String(nextDate.getDate()).padStart(2, '0');
+        const nextDateStr = `${nextYear}-${nextMonth}-${nextDay}`;
+        
+        const hrvFilter = `daily_heart_rate_variability.date >= "${dateStr}" AND daily_heart_rate_variability.date < "${nextDateStr}"`;
+        const hrvUrl = `https://health.googleapis.com/v4/users/me/dataTypes/daily-heart-rate-variability/dataPoints?filter=${encodeURIComponent(hrvFilter)}`;
+        
+        console.log(`Pulling Google Health HRV data: ${hrvUrl}`);
+        try {
+            const hrvResponse = await obsidian.requestUrl({
+                url: hrvUrl,
+                method: 'GET',
+                headers: {
+                    'Authorization': `Bearer ${token}`
+                }
+            });
+            if (hrvResponse.status === 200) {
+                const hrvData = hrvResponse.json;
+                const hrvPoints = hrvData.dataPoints || [];
+                if (hrvPoints.length > 0) {
+                    const valObj = hrvPoints[0].dailyHeartRateVariability || {};
+                    const rmssd = valObj.averageHeartRateVariabilityMilliseconds || valObj.deepSleepRootMeanSquareOfSuccessiveDifferencesMilliseconds || 0;
+                    updates["HRV"] = String(Math.round(rmssd));
+                }
+            }
+        } catch(e) {
+            console.error("Failed to pull HRV from Google Health API:", e);
+        }
         
         const dailyFile = this.getDailyNoteFile();
         if (!dailyFile) {
@@ -802,7 +837,7 @@ class OmniLoggerPlugin extends obsidian.Plugin {
         const updatedContent = this.updateFrontmatterProperties(content, updates);
         await this.app.vault.modify(dailyFile, updatedContent);
         
-        console.log(`Google Health Pull Success: Sleep hours ${sleepHoursStr}, Wake up time ${wakeUpStr}`);
+        console.log(`Google Health Pull Success: Sleep hours ${sleepHoursStr}, Wake up time ${wakeUpStr}, HRV ${updates["HRV"] || "N/A"}`);
     }
 
     async processOCR(base64Data, mimeType, type) {
@@ -970,8 +1005,8 @@ Return your response strictly as a JSON object matching this schema:
         const redirectUri = "http://localhost:8092";
         
         const scopes = [
-            "https://www.googleapis.com/auth/fitness.sleep.read",
-            "https://www.googleapis.com/auth/fitness.activity.read"
+            "https://www.googleapis.com/auth/googlehealth.sleep.readonly",
+            "https://www.googleapis.com/auth/googlehealth.health_metrics_and_measurements.readonly"
         ].join(" ");
         
         const authUrl = `https://accounts.google.com/o/oauth2/v2/auth?` +
@@ -1936,23 +1971,34 @@ class OmniLoggerSettingTab extends obsidian.PluginSettingTab {
                     let secretId = this.plugin.settings.googleCredentialsId || 'omni-logger-google-credentials';
                     this.plugin.getSecret(secretId, 'googleCredentials').then(secret => {
                         if (!secret) {
-                            return this.plugin.getSecret('schedule-assistant-google-credentials', 'googleCredentials').then(fbSecret => {
+                            return this.plugin.getSecret('schedule-assistant-google-credentials', 'googleCredentials').then(async fbSecret => {
                                 if (!fbSecret) {
-                                    return this.plugin.getSecret('timeblocker-google-credentials', 'googleCredentials');
+                                    return this.plugin.getSecret('timeblocker-google-credentials', 'googleCredentials').then(async tbSecret => {
+                                        if (tbSecret) {
+                                            await this.plugin.setSecret('omni-logger-google-credentials', 'googleCredentials', tbSecret);
+                                            this.plugin.settings.googleCredentialsId = 'omni-logger-google-credentials';
+                                            await this.plugin.saveSettings();
+                                            return tbSecret;
+                                        }
+                                        return '';
+                                    });
                                 }
+                                await this.plugin.setSecret('omni-logger-google-credentials', 'googleCredentials', fbSecret);
+                                this.plugin.settings.googleCredentialsId = 'omni-logger-google-credentials';
+                                await this.plugin.saveSettings();
                                 return fbSecret;
                             });
                         }
                         return secret;
                     }).then(secret => {
-                        if (secret && secret.includes('"client_id"')) {
+                        if (secret && secret.toLowerCase().includes('client_id')) {
                             let displayStr = secret.substring(0, 15) + '...' + secret.substring(secret.length - 5);
                             text.setValue(displayStr);
                         }
                     });
                     
                     text.onChange(async (value) => {
-                        if (value && value.length > 50 && value.includes('"client_id"')) {
+                        if (value && value.length > 50 && value.toLowerCase().includes('client_id')) {
                             let secretId = 'omni-logger-google-credentials';
                             await this.plugin.setSecret(secretId, 'googleCredentials', value);
                             this.plugin.settings.googleCredentialsId = secretId;
