@@ -90,16 +90,54 @@ class CallsLogger:
             self.root.destroy()
             return
             
-        # 1. Ask for screenshot file
-        img_path = filedialog.askopenfilename(
-            title="Select Work Call Log Screenshot",
-            filetypes=[("Image files", "*.png *.jpg *.jpeg *.webp *.bmp")]
-        )
+        # 1. Check clipboard first
+        from PIL import ImageGrab, Image
+        import io
         
-        if not img_path:
-            # User cancelled
-            self.root.destroy()
-            return
+        img_bytes = None
+        mime_type = "image/png"
+        
+        try:
+            clipboard_data = ImageGrab.grabclipboard()
+            if isinstance(clipboard_data, Image.Image):
+                use_clipboard = messagebox.askyesno(
+                    "Clipboard Image Found", 
+                    "An image was found in your clipboard. Do you want to process it?"
+                )
+                if use_clipboard:
+                    buf = io.BytesIO()
+                    clipboard_data.save(buf, format="PNG")
+                    img_bytes = buf.getvalue()
+            elif isinstance(clipboard_data, list) and clipboard_data:
+                first_file = clipboard_data[0]
+                if os.path.exists(first_file) and first_file.lower().endswith(('.png', '.jpg', '.jpeg', '.webp', '.bmp')):
+                    use_clipboard = messagebox.askyesno(
+                        "Clipboard Image File Found", 
+                        f"Copied image file '{os.path.basename(first_file)}' found in clipboard. Do you want to process it?"
+                    )
+                    if use_clipboard:
+                        with open(first_file, "rb") as f:
+                            img_bytes = f.read()
+                        if first_file.lower().endswith(('.jpg', '.jpeg')):
+                            mime_type = "image/jpeg"
+                        elif first_file.lower().endswith('.webp'):
+                            mime_type = "image/webp"
+                        elif first_file.lower().endswith('.bmp'):
+                            mime_type = "image/bmp"
+        except Exception as e:
+            print(f"Error checking clipboard: {e}")
+
+        img_path = None
+        if img_bytes is None:
+            img_path = filedialog.askopenfilename(
+                title="Select Work Call Log Screenshot",
+                filetypes=[("Image files", "*.png *.jpg *.jpeg *.webp *.bmp")]
+            )
+            
+            if not img_path:
+                # User cancelled
+                self.root.destroy()
+                return
             
         # 2. Show loading window
         self.loading_win = tk.Toplevel(self.root)
@@ -136,22 +174,25 @@ class CallsLogger:
         self.loading_win.update()
         
         # 3. Process in background thread
-        threading.Thread(target=self.process_image, args=(img_path,), daemon=True).start()
+        threading.Thread(target=self.process_image, args=(img_path, img_bytes, mime_type), daemon=True).start()
         self.root.mainloop()
         
-    def process_image(self, img_path):
+    def process_image(self, img_path, img_bytes=None, mime_type="image/png"):
         try:
-            # Read and encode image
-            with open(img_path, "rb") as f:
-                img_data = base64.b64encode(f.read()).decode("utf-8")
-                
-            mime_type = "image/png"
-            if img_path.lower().endswith(".jpg") or img_path.lower().endswith(".jpeg"):
-                mime_type = "image/jpeg"
-            elif img_path.lower().endswith(".webp"):
-                mime_type = "image/webp"
-            elif img_path.lower().endswith(".bmp"):
-                mime_type = "image/bmp"
+            if img_bytes is not None:
+                img_data = base64.b64encode(img_bytes).decode("utf-8")
+            else:
+                # Read and encode image
+                with open(img_path, "rb") as f:
+                    img_data = base64.b64encode(f.read()).decode("utf-8")
+                    
+                mime_type = "image/png"
+                if img_path.lower().endswith(".jpg") or img_path.lower().endswith(".jpeg"):
+                    mime_type = "image/jpeg"
+                elif img_path.lower().endswith(".webp"):
+                    mime_type = "image/webp"
+                elif img_path.lower().endswith(".bmp"):
+                    mime_type = "image/bmp"
                 
             prompt = """
             You are a call log analyzer. Examine this phone call logs screenshot and count the number of outgoing and incoming call entries (excluding entries that are clearly not work-related if indicated, otherwise count all calls shown) grouped by hourly blocks from 8 AM to 4 PM for the target day.

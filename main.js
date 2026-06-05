@@ -450,7 +450,7 @@ class OmniLoggerPlugin extends obsidian.Plugin {
                     const now = new Date();
                     const startTime = new Date();
                     startTime.setDate(now.getDate() - 1);
-                    const filter = `sleep.interval.end_time >= "${startTime.toISOString()}" AND sleep.interval.end_time <= "${now.toISOString()}"`;
+                    const filter = `sleep.interval.end_time >= "${startTime.toISOString()}" AND sleep.interval.end_time < "${now.toISOString()}"`;
                     const url = `https://health.googleapis.com/v4/users/me/dataTypes/sleep/dataPoints?filter=${encodeURIComponent(filter)}&pageSize=1`;
                     const res = await requestWithTimeout({
                         url: url,
