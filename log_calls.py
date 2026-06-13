@@ -53,23 +53,79 @@ def get_gemini_key():
 
     raise FileNotFoundError("Gemini API Key not found in environment, omni-logger/data.json, or schedule-assistant-focus-timer/data.json. Please configure the key in Obsidian settings.")
 
+def load_prompt_from_vault():
+    try:
+        plugin_dir = os.path.dirname(os.path.abspath(__file__))
+        vault_dir = os.path.dirname(os.path.dirname(os.path.dirname(plugin_dir)))
+        
+        ingredients_folder = "99_System/Omni_Templates"
+        data_json_path = os.path.join(plugin_dir, "data.json")
+        if os.path.exists(data_json_path):
+            with open(data_json_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                ingredients_folder = data.get("ingredientsFolder", "99_System/Omni_Templates")
+                
+        templates_path = os.path.join(vault_dir, ingredients_folder)
+        for folder_name in ["Work Calls", "Work Logs"]:
+            meta_path = os.path.join(templates_path, folder_name, "metadata.json")
+            if os.path.exists(meta_path):
+                with open(meta_path, "r", encoding="utf-8") as f:
+                    meta = json.load(f)
+                    prompt = meta.get("prompt")
+                    if prompt and prompt.strip():
+                        return prompt.strip()
+    except Exception as e:
+        print(f"Error loading template prompt: {e}")
+    return None
+
 def update_note_calls(content, calls_dict):
-    keys = ["calls-08am", "calls-09am", "calls-10am", "calls-11am", "calls-12pm", "calls-01pm", "calls-02pm", "calls-03pm", "calls-04pm"]
+    keys = list(calls_dict.keys())
     
     # Check if any call keys are already in the file
     has_keys = any(f"{k}::" in content for k in keys)
     
     if has_keys:
-        # Replace individual lines
-        for k in keys:
-            val = calls_dict.get(k, 0)
-            pattern = rf"{k}::\s*\d*"
-            content = re.sub(pattern, f"{k}:: {val}", content)
+        # Replace individual lines in-place
+        lines = content.splitlines()
+        updated_keys = set()
+        for i in range(len(lines)):
+            line_strip = lines[i].strip()
+            for k in keys:
+                if line_strip.startswith(f"{k}::"):
+                    val = calls_dict[k]
+                    lines[i] = f"{k}:: {val}"
+                    updated_keys.add(k)
+        
+        # If there are any missing keys, append them under the Log heading or at the end
+        missing_keys = [k for k in keys if k not in updated_keys]
+        if missing_keys:
+            # Look for 🪵 Log heading
+            log_header_idx = -1
+            for idx, l in enumerate(lines):
+                if "## 🪵 Log" in l:
+                    log_header_idx = idx
+                    break
+            
+            insert_lines = []
+            for k in missing_keys:
+                val = calls_dict[k]
+                insert_lines.append(f"{k}:: {val}")
+                
+            if log_header_idx != -1:
+                lines.insert(log_header_idx + 1, "")
+                for line in reversed(insert_lines):
+                    lines.insert(log_header_idx + 2, line)
+            else:
+                lines.append("")
+                lines.append("## 🪵 Log")
+                lines.extend(insert_lines)
+        
+        content = "\n".join(lines) + "\n"
     else:
-        # Append a new block at the bottom
+        # Append all keys as a new block at the bottom
         block_lines = [""]
         for k in keys:
-            val = calls_dict.get(k, 0)
+            val = calls_dict[k]
             block_lines.append(f"{k}:: {val}")
         content = content.rstrip() + "\n" + "\n".join(block_lines) + "\n"
         
@@ -194,34 +250,36 @@ class CallsLogger:
                 elif img_path.lower().endswith(".bmp"):
                     mime_type = "image/bmp"
                 
-            prompt = """
-            You are a call log analyzer. Examine this phone call logs screenshot and count the number of outgoing and incoming call entries (excluding entries that are clearly not work-related if indicated, otherwise count all calls shown) grouped by hourly blocks from 8 AM to 4 PM for the target day.
-            
-            Map each call to the hour of its timestamp:
-            - 8:00 AM - 8:59 AM -> calls-08am
-            - 9:00 AM - 9:59 AM -> calls-09am
-            - 10:00 AM - 10:59 AM -> calls-10am
-            - 11:00 AM - 11:59 AM -> calls-11am
-            - 12:00 PM - 12:59 PM -> calls-12pm
-            - 1:00 PM - 1:59 PM -> calls-01pm
-            - 2:00 PM - 2:59 PM -> calls-02pm
-            - 3:00 PM - 3:59 PM -> calls-03pm
-            - 4:00 PM - 4:59 PM -> calls-04pm
-            
-            Return your findings STRICTLY in a JSON format matching this schema:
-            {
-              "calls-08am": <integer_count>,
-              "calls-09am": <integer_count>,
-              "calls-10am": <integer_count>,
-              "calls-11am": <integer_count>,
-              "calls-12pm": <integer_count>,
-              "calls-01pm": <integer_count>,
-              "calls-02pm": <integer_count>,
-              "calls-03pm": <integer_count>,
-              "calls-04pm": <integer_count>
-            }
-            Ensure no other text is returned besides the JSON.
-            """
+            prompt = load_prompt_from_vault()
+            if not prompt:
+                prompt = """
+                You are a call log analyzer. Examine this phone call logs screenshot and count the number of outgoing and incoming call entries (excluding entries that are clearly not work-related if indicated, otherwise count all calls shown) grouped by hourly blocks from 8 AM to 4 PM for the target day.
+                
+                Map each call to the hour of its timestamp:
+                - 8:00 AM - 8:59 AM -> calls-08am
+                - 9:00 AM - 9:59 AM -> calls-09am
+                - 10:00 AM - 10:59 AM -> calls-10am
+                - 11:00 AM - 11:59 AM -> calls-11am
+                - 12:00 PM - 12:59 PM -> calls-12pm
+                - 1:00 PM - 1:59 PM -> calls-01pm
+                - 2:00 PM - 2:59 PM -> calls-02pm
+                - 3:00 PM - 3:59 PM -> calls-03pm
+                - 4:00 PM - 4:59 PM -> calls-04pm
+                
+                Return your findings STRICTLY in a JSON format matching this schema:
+                {
+                  "calls-08am": <integer_count>,
+                  "calls-09am": <integer_count>,
+                  "calls-10am": <integer_count>,
+                  "calls-11am": <integer_count>,
+                  "calls-12pm": <integer_count>,
+                  "calls-01pm": <integer_count>,
+                  "calls-02pm": <integer_count>,
+                  "calls-03pm": <integer_count>,
+                  "calls-04pm": <integer_count>
+                }
+                Ensure no other text is returned besides the JSON.
+                """
             
             url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={self.api_key}"
             headers = {"Content-Type": "application/json"}

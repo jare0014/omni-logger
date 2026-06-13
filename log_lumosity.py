@@ -53,6 +53,31 @@ def get_gemini_key():
 
     raise FileNotFoundError("Gemini API Key not found in environment, omni-logger/data.json, or schedule-assistant-focus-timer/data.json. Please configure the key in Obsidian settings.")
 
+def load_prompt_from_vault():
+    try:
+        plugin_dir = os.path.dirname(os.path.abspath(__file__))
+        vault_dir = os.path.dirname(os.path.dirname(os.path.dirname(plugin_dir)))
+        
+        ingredients_folder = "99_System/Omni_Templates"
+        data_json_path = os.path.join(plugin_dir, "data.json")
+        if os.path.exists(data_json_path):
+            with open(data_json_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                ingredients_folder = data.get("ingredientsFolder", "99_System/Omni_Templates")
+                
+        templates_path = os.path.join(vault_dir, ingredients_folder)
+        for folder_name in ["Lumosity"]:
+            meta_path = os.path.join(templates_path, folder_name, "metadata.json")
+            if os.path.exists(meta_path):
+                with open(meta_path, "r", encoding="utf-8") as f:
+                    meta = json.load(f)
+                    prompt = meta.get("prompt")
+                    if prompt and prompt.strip():
+                        return prompt.strip()
+    except Exception as e:
+        print(f"Error loading template prompt: {e}")
+    return None
+
 def parse_frontmatter(content):
     match = re.match(r"^---\r?\n(.*?)\r?\n---", content, re.DOTALL)
     if not match:
@@ -237,23 +262,25 @@ class LumosityLogger:
                 elif img_path.lower().endswith(".bmp"):
                     mime_type = "image/bmp"
                 
-            prompt = """
-            You are a health and brain-training tracker assistant. Examine this Lumosity workout screenshot and extract the following:
-            1. The time of practice (if visible, e.g. "08:15 AM". If not visible, return "Not Found").
-            2. The specific game played, its corresponding category, and the score achieved.
-
-            Return your findings STRICTLY as a JSON object matching this exact schema:
-            {
-              "start_time": "HH:MM AM/PM",
-              "scores": [
+            prompt = load_prompt_from_vault()
+            if not prompt:
+                prompt = """
+                You are a health and brain-training tracker assistant. Examine this Lumosity workout screenshot and extract the following:
+                1. The time of practice (if visible, e.g. "08:15 AM". If not visible, return "Not Found").
+                2. The specific game played, its corresponding category, and the score achieved.
+    
+                Return your findings STRICTLY as a JSON object matching this exact schema:
                 {
-                  "game": "Game Name",
-                  "category": "Category",
-                  "score": 1234
+                  "start_time": "HH:MM AM/PM",
+                  "scores": [
+                    {
+                      "game": "Game Name",
+                      "category": "Category",
+                      "score": 1234
+                    }
+                  ]
                 }
-              ]
-            }
-            """
+                """
             
             url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={self.api_key}"
             headers = {"Content-Type": "application/json"}
