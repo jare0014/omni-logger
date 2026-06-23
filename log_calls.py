@@ -281,33 +281,46 @@ class CallsLogger:
                 Ensure no other text is returned besides the JSON.
                 """
             
-            url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={self.api_key}"
-            headers = {"Content-Type": "application/json"}
-            payload = {
-                "contents": [
-                    {
-                        "parts": [
-                            {"text": prompt},
-                            {
-                                "inlineData": {
-                                    "mimeType": mime_type,
-                                    "data": img_data
-                                }
-                            }
-                        ]
-                    }
-                ],
-                "generationConfig": {
-                    "responseMimeType": "application/json"
-                }
-            }
+            # Try fallback models in case of rate limits / daily quota exhaustion
+            model_names = ['gemini-3.5-flash', 'gemini-3.1-flash-lite', 'gemini-2.5-flash', 'gemini-2.0-flash']
+            text_response = None
+            last_err = None
             
-            res = requests.post(url, headers=headers, json=payload, timeout=30)
-            if res.status_code != 200:
-                raise RuntimeError(f"Gemini API returned error: {res.text}")
+            for model_name in model_names:
+                url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={self.api_key}"
+                headers = {"Content-Type": "application/json"}
+                payload = {
+                    "contents": [
+                        {
+                            "parts": [
+                                {"text": prompt},
+                                {
+                                    "inlineData": {
+                                        "mimeType": mime_type,
+                                        "data": img_data
+                                    }
+                                }
+                            ]
+                        }
+                    ],
+                    "generationConfig": {
+                        "responseMimeType": "application/json"
+                    }
+                }
                 
-            res_data = res.json()
-            text_response = res_data["candidates"][0]["content"]["parts"][0]["text"].strip()
+                try:
+                    res = requests.post(url, headers=headers, json=payload, timeout=30)
+                    if res.status_code == 200:
+                        res_data = res.json()
+                        text_response = res_data["candidates"][0]["content"]["parts"][0]["text"].strip()
+                        break
+                    else:
+                        last_err = RuntimeError(f"Gemini API model {model_name} failed with status {res.status_code}: {res.text}")
+                except Exception as e:
+                    last_err = e
+            
+            if not text_response:
+                raise last_err
             
             # Parse output JSON
             calls_dict = json.loads(text_response)
