@@ -15,7 +15,26 @@ const DEFAULT_SETTINGS = {
     omniCallsInstructions: 'You are a call log analyzer. Examine this phone call logs screenshot and count the number of outgoing and incoming call entries grouped by hourly blocks from 8 AM to 4 PM for the target day. Return findings strictly in a JSON format matching this schema:\n{\n  "calls-08am": 0,\n  "calls-09am": 0,\n  "calls-10am": 0,\n  "calls-11am": 0,\n  "calls-12pm": 0,\n  "calls-01pm": 0,\n  "calls-02pm": 0,\n  "calls-03pm": 0,\n  "calls-04pm": 0\n}\nEnsure no other text is returned besides the JSON.',
     omniLumosityInstructions: 'You are a health and brain-training tracker assistant. Examine this Lumosity workout screenshot and extract the following:\n1. The time of practice (if visible, e.g. "08:15 AM". If not visible, return "Not Found").\n2. The specific game played, its corresponding category, and the score achieved.\n\nReturn findings strictly in a JSON format matching this schema:\n{\n  "start_time": "HH:MM AM/PM",\n  "scores": [\n    {\n      "game": "Game Name",\n      "category": "Category",\n      "score": 1234\n    }\n  ]\n}\nEnsure no other text is returned besides the JSON.',
     omniHealthInstructions: 'You are a health tracker assistant. Examine this health dashboard screenshot and extract sleep hours, wake up time, and heart rate variability (HRV) if visible.\n\nReturn findings strictly in a JSON format matching this schema:\n{\n  "Sleep_hours": "H:MM",\n  "wake_up": "H:MM",\n  "HRV": 55,\n  "Sleep_score": 75,\n  "Readiness": 80\n}\nEnsure no other text is returned besides the JSON.',
-    customTemplates: []
+    customTemplates: [],
+    healthSyncConfig: {
+        sleep: { enabled: true, destination: "frontmatter", key: "Sleep_hours" },
+        hrv: { enabled: true, destination: "frontmatter", key: "HRV" },
+        caffeine: { enabled: true, destination: "frontmatter", key: "caffeine" },
+        alcohol: { enabled: true, destination: "frontmatter", key: "alcohol" },
+        hydration: { enabled: true, destination: "frontmatter", key: "hydration" },
+        protein: { enabled: false, destination: "frontmatter", key: "protein" },
+        calories: { enabled: false, destination: "frontmatter", key: "calories" }
+    },
+    requestedScopes: [
+        "https://www.googleapis.com/auth/googlehealth.sleep.readonly",
+        "https://www.googleapis.com/auth/googlehealth.health_metrics_and_measurements.readonly",
+        "https://www.googleapis.com/auth/googlehealth.nutrition.readonly",
+        "https://www.googleapis.com/auth/googlehealth.nutrition.writeonly"
+    ],
+    googleHealthSleepPrompt: 'Examine the raw Google Fitness API JSON payload representing my sleep sessions for today. Extract the longest sleep session and calculate the total sleep duration in hours and minutes. Your output MUST be a valid JSON object with keys like "Sleep" and "Wakeup". Do not wrap in markdown blocks. Example: { "Sleep": "7h 30m", "Wakeup": "07:00 AM" }',
+    googleHealthVitalsPrompt: 'Examine the raw Google Fitness API JSON payload representing heart rate variability (HRV) for today. Extract the RMSSD or equivalent metric. Your output MUST be a valid JSON object with keys like "HRV". Example: { "HRV": 55 }',
+    googleHealthNutritionPrompt: 'Examine the raw Google Fitness API JSON payload representing my food logs for today. Summarize caffeine (mg), alcohol (g), protein (g), and calories (kcal). Your output MUST be a valid JSON object with keys like "caffeine", "alcohol", "protein", "calories". Example: { "caffeine": 95, "alcohol": 0, "protein": 30, "calories": 160 }',
+    googleHealthHydrationPrompt: 'Examine the raw Google Fitness API JSON payload representing hydration. Summarize total water intake in milliliters. Your output MUST be a valid JSON object with keys like "hydration". Example: { "hydration": 750 }'
 };
 
 
@@ -93,6 +112,15 @@ class OmniLoggerPlugin extends obsidian.Plugin {
             }
         });
 
+        // Register Command to Open Food Logger & Registry
+        this.addCommand({
+            id: 'open-food-logger',
+            name: 'Open Food Ingestion & Registry',
+            callback: () => {
+                new OmniFoodLoggerModal(this.app, this).open();
+            }
+        });
+
         // Register commands for meta-bind buttons
         this.addCommand({
             id: 'log-calls',
@@ -110,6 +138,18 @@ class OmniLoggerPlugin extends obsidian.Plugin {
             id: 'sync-fitbit',
             name: 'Sync Fitbit/Health Data',
             callback: () => this.runPythonScript('google_health_pull.py')
+        });
+
+        this.addCommand({
+            id: 'hl7-nl-query',
+            name: 'Run HL7 NL-to-SQL Query',
+            callback: () => this.runHL7QueryScript()
+        });
+
+        this.addCommand({
+            id: 'hl7-ingest-all',
+            name: 'Ingest All HL7 Samples',
+            callback: () => this.runHL7IngestScript()
         });
 
         // Start background checks for APIs
@@ -693,6 +733,14 @@ class OmniLoggerPlugin extends obsidian.Plugin {
     }
 
     getDailyNoteFile() {
+        const activeFile = this.app.workspace.getActiveFile();
+        if (activeFile && activeFile.path.startsWith('02_Journal/01_Daily/') && activeFile.name.endsWith('.md')) {
+            return activeFile;
+        }
+        if (activeFile && /^\d{4}-\d{2}-\d{2}\.md$/.test(activeFile.name)) {
+            return activeFile;
+        }
+        
         const now = new Date();
         const year = now.getFullYear();
         const month = String(now.getMonth() + 1).padStart(2, '0');
@@ -830,10 +878,7 @@ class OmniLoggerPlugin extends obsidian.Plugin {
         const wakeUpDate = new Date(mainSleep.interval.endTime);
         const wakeUpStr = `${wakeUpDate.getHours()}:${String(wakeUpDate.getMinutes()).padStart(2, '0')}`;
         
-        const updates = {
-            "Sleep_hours": sleepHoursStr,
-            "wake_up": wakeUpStr
-        };
+        let hrvVal = null;
         
         // 2. Fetch HRV
         const year = now.getFullYear();
@@ -866,7 +911,7 @@ class OmniLoggerPlugin extends obsidian.Plugin {
                 if (hrvPoints.length > 0) {
                     const valObj = hrvPoints[0].dailyHeartRateVariability || {};
                     const rmssd = valObj.averageHeartRateVariabilityMilliseconds || valObj.deepSleepRootMeanSquareOfSuccessiveDifferencesMilliseconds || 0;
-                    updates["HRV"] = String(Math.round(rmssd));
+                    hrvVal = String(Math.round(rmssd));
                 }
             }
         } catch(e) {
@@ -879,10 +924,60 @@ class OmniLoggerPlugin extends obsidian.Plugin {
         }
         
         const content = await this.app.vault.read(dailyFile);
-        const updatedContent = this.updateFrontmatterProperties(content, updates);
-        await this.app.vault.modify(dailyFile, updatedContent);
         
-        console.log(`Google Health Pull Success: Sleep hours ${sleepHoursStr}, Wake up time ${wakeUpStr}, HRV ${updates["HRV"] || "N/A"}`);
+        const syncConfig = this.settings.healthSyncConfig || DEFAULT_SETTINGS.healthSyncConfig;
+        const yamlUpdates = {};
+        const dataviewUpdates = {};
+        const appendUpdates = {};
+        
+        // Process Sleep
+        const sleepCfg = syncConfig.sleep || { enabled: true, destination: "frontmatter", key: "Sleep_hours" };
+        if (sleepCfg.enabled) {
+            const sDest = sleepCfg.destination || 'frontmatter';
+            const sKey = sleepCfg.key || 'Sleep_hours';
+            
+            if (sDest === 'frontmatter') {
+                yamlUpdates[sKey] = sleepHoursStr;
+                yamlUpdates['wake_up'] = wakeUpStr;
+            } else if (sDest === 'dataview') {
+                dataviewUpdates[sKey] = sleepHoursStr;
+                dataviewUpdates['wake_up'] = wakeUpStr;
+            } else if (sDest === 'append-log') {
+                appendUpdates[sKey] = sleepHoursStr;
+                appendUpdates['wake_up'] = wakeUpStr;
+            }
+        }
+        
+        // Process HRV
+        if (hrvVal) {
+            const hrvCfg = syncConfig.hrv || { enabled: true, destination: "frontmatter", key: "HRV" };
+            if (hrvCfg.enabled) {
+                const hDest = hrvCfg.destination || 'frontmatter';
+                const hKey = hrvCfg.key || 'HRV';
+                
+                if (hDest === 'frontmatter') {
+                    yamlUpdates[hKey] = hrvVal;
+                } else if (hDest === 'dataview') {
+                    dataviewUpdates[hKey] = hrvVal;
+                } else if (hDest === 'append-log') {
+                    appendUpdates[hKey] = hrvVal;
+                }
+            }
+        }
+        
+        let updatedContent = content;
+        if (Object.keys(yamlUpdates).length > 0) {
+            updatedContent = this.updateFrontmatterProperties(updatedContent, yamlUpdates);
+        }
+        if (Object.keys(dataviewUpdates).length > 0) {
+            updatedContent = this.updateDataviewFields(updatedContent, dataviewUpdates);
+        }
+        if (Object.keys(appendUpdates).length > 0) {
+            updatedContent = this.appendToBottomLog(updatedContent, appendUpdates);
+        }
+        
+        await this.app.vault.modify(dailyFile, updatedContent);
+        console.log(`Google Health Pull Success: Sleep hours ${sleepHoursStr}, Wake up time ${wakeUpStr}, HRV ${hrvVal || "N/A"}`);
     }
 
     async processOCR(base64Data, mimeType, type) {
@@ -1049,10 +1144,11 @@ Return your response strictly as a JSON object matching this schema:
         const clientSecret = web.client_secret;
         const redirectUri = "http://localhost:8092";
         
-        const scopes = [
+        const scopesList = this.settings.requestedScopes || [
             "https://www.googleapis.com/auth/googlehealth.sleep.readonly",
             "https://www.googleapis.com/auth/googlehealth.health_metrics_and_measurements.readonly"
-        ].join(" ");
+        ];
+        const scopes = scopesList.join(" ");
         
         const authUrl = `https://accounts.google.com/o/oauth2/v2/auth?` +
             `response_type=code` +
@@ -1379,6 +1475,86 @@ Return your response strictly as a JSON object matching this schema:
         return newLines.join('\n');
     }
 
+    updateDataviewFields(content, updates) {
+        let fmPart = "";
+        let bodyPart = content;
+        const fmMatch = content.match(/^---\r?\n([\s\S]*?)\r?\n---/);
+        if (fmMatch) {
+            fmPart = fmMatch[0];
+            bodyPart = content.substring(fmMatch[0].length);
+        }
+        
+        for (const [key, val] of Object.entries(updates)) {
+            const pattern = new RegExp(`^\\s*${this.escapeRegex(key)}::.*$`, 'm');
+            if (pattern.test(bodyPart)) {
+                bodyPart = bodyPart.replace(pattern, `${key}:: ${val}`);
+            } else {
+                bodyPart = bodyPart.trim() + `\n${key}:: ${val}\n`;
+            }
+        }
+        return fmPart + bodyPart;
+    }
+
+    appendToBottomLog(content, updates) {
+        let bodyPart = content;
+        const logEntries = [];
+        for (const [key, val] of Object.entries(updates)) {
+            logEntries.push(`- [health_sync] ${key}: ${val}`);
+        }
+        
+        if (logEntries.length > 0) {
+            const gitStart = bodyPart.indexOf("<!--START_Antigravity_Git_Log-->");
+            const newText = "\n" + logEntries.join("\n") + "\n\n";
+            if (gitStart !== -1) {
+                bodyPart = bodyPart.substring(0, gitStart) + newText + bodyPart.substring(gitStart);
+            } else {
+                bodyPart = bodyPart.trim() + "\n" + newText;
+            }
+        }
+        return bodyPart;
+    }
+
+    escapeRegex(string) {
+        return string.replace(/[/\-\\^$*+?.()|[\]{}]/g, '\\$&');
+    }
+
+    async loadGoToItems() {
+        const fs = require('fs');
+        const vaultPath = this.app.vault.adapter.getBasePath();
+        const sep = vaultPath.includes('/') ? '/' : '\\';
+        const pluginJsonPath = `${vaultPath}${sep}.obsidian${sep}plugins${sep}omni-logger${sep}health_go_to_items.json`;
+        
+        if (fs.existsSync(pluginJsonPath)) {
+            try {
+                const content = fs.readFileSync(pluginJsonPath, 'utf8');
+                const data = JSON.parse(content);
+                return data.go_to_items || [];
+            } catch(e) {
+                console.error("Failed to parse go-to items:", e);
+            }
+        }
+        return [];
+    }
+
+    async saveGoToItems(items) {
+        const fs = require('fs');
+        const vaultPath = this.app.vault.adapter.getBasePath();
+        const sep = vaultPath.includes('/') ? '/' : '\\';
+        const pluginJsonPath = `${vaultPath}${sep}.obsidian${sep}plugins${sep}omni-logger${sep}health_go_to_items.json`;
+        const devJsonPath = `${vaultPath}${sep}..${sep}antigravity${sep}omni-logger${sep}health_go_to_items.json`;
+        
+        const payload = JSON.stringify({ go_to_items: items }, null, 2);
+        
+        try {
+            fs.writeFileSync(pluginJsonPath, payload, 'utf8');
+            if (fs.existsSync(`${vaultPath}${sep}..${sep}antigravity${sep}omni-logger`)) {
+                fs.writeFileSync(devJsonPath, payload, 'utf8');
+            }
+        } catch(e) {
+            console.error("Failed to save go-to items:", e);
+        }
+    }
+
     organizeCustomPluginsSidebar() {
         const fs = require('fs');
         const vaultPath = this.app.vault.adapter.getBasePath();
@@ -1557,6 +1733,79 @@ Return your response strictly as a JSON object matching this schema:
             }
         });
     }
+
+    async runHL7QueryScript() {
+        const child_process = require('child_process');
+        const path = require('path');
+        
+        const vaultPath = this.app.vault.adapter.getBasePath();
+        const sep = vaultPath.includes('/') ? '/' : '\\';
+        const scriptPath = `${vaultPath}${sep}04_Projects${sep}hl7-nl-to-sql${sep}query_lake_obsidian.py`;
+        
+        const activeFile = this.app.workspace.getActiveFile();
+        if (!activeFile) {
+            new obsidian.Notice("No active note found!");
+            return;
+        }
+        const absoluteActivePath = path.join(vaultPath, activeFile.path);
+        
+        let geminiKey = await this.getSecret(this.settings.geminiApiKeyId || 'omni-logger-gemini-api-key', 'geminiApiKey');
+        if (!geminiKey) {
+            geminiKey = await this.getSecret('timeblocker-gemini-api-key', 'geminiApiKey');
+        }
+        const env = Object.assign({}, process.env, {
+            GEMINI_API_KEY: geminiKey
+        });
+        
+        const cmd = `python -u "${scriptPath}" "${absoluteActivePath}"`;
+        console.log(`Running Python script: ${cmd}`);
+        
+        new obsidian.Notice("Running HL7 NL-to-SQL Query...");
+        
+        child_process.exec(cmd, { env: env }, (err, stdout, stderr) => {
+            if (err) {
+                console.error(`Script error: ${stderr || err.message}`);
+                new obsidian.Notice(`Error: ${stderr || err.message}`);
+            } else {
+                console.log(`Script output: ${stdout}`);
+                if (stdout.trim()) {
+                    new obsidian.Notice(stdout.trim());
+                }
+            }
+        });
+    }
+
+    async runHL7IngestScript() {
+        const child_process = require('child_process');
+        const path = require('path');
+        
+        const vaultPath = this.app.vault.adapter.getBasePath();
+        const sep = vaultPath.includes('/') ? '/' : '\\';
+        const scriptPath = `${vaultPath}${sep}04_Projects${sep}hl7-nl-to-sql${sep}ingest_all_samples.py`;
+        
+        let geminiKey = await this.getSecret(this.settings.geminiApiKeyId || 'omni-logger-gemini-api-key', 'geminiApiKey');
+        if (!geminiKey) {
+            geminiKey = await this.getSecret('timeblocker-gemini-api-key', 'geminiApiKey');
+        }
+        const env = Object.assign({}, process.env, {
+            GEMINI_API_KEY: geminiKey
+        });
+        
+        const cmd = `python -u "${scriptPath}"`;
+        console.log(`Running Ingest Script: ${cmd}`);
+        
+        new obsidian.Notice("Starting HL7 Batch Ingestion...");
+        
+        child_process.exec(cmd, { env: env }, (err, stdout, stderr) => {
+            if (err) {
+                console.error(`Ingest error: ${stderr || err.message}`);
+                new obsidian.Notice(`Ingest Error: ${stderr || err.message}`);
+            } else {
+                console.log(`Ingest output: ${stdout}`);
+                new obsidian.Notice("HL7 Batch Ingestion Completed successfully!");
+            }
+        });
+    }
 }
 
 class OmniLoggerSettingTab extends obsidian.PluginSettingTab {
@@ -1595,7 +1844,369 @@ class OmniLoggerSettingTab extends obsidian.PluginSettingTab {
             badge.setAttribute('title', tooltip);
         };
 
-        // --- TEMPLATE GENERATOR ---
+        // ==========================================
+        // 1. GOOGLE HEALTH INTEGRATION (Top, Collapsible)
+        // ==========================================
+        const googleHealthDetails = containerEl.createEl('details');
+        googleHealthDetails.style.marginBottom = '20px';
+        googleHealthDetails.style.border = '1px solid var(--background-modifier-border)';
+        googleHealthDetails.style.borderRadius = '6px';
+        googleHealthDetails.style.padding = '8px';
+        if (this.plugin.settings.dataSourceApi === 'google-health') {
+            googleHealthDetails.setAttribute('open', '');
+        }
+        const googleHealthSummary = googleHealthDetails.createEl('summary', { text: '🔗 Google Health Integration' });
+        googleHealthSummary.style.cursor = 'pointer';
+        googleHealthSummary.style.fontSize = '1.2em';
+        googleHealthSummary.style.fontWeight = 'bold';
+        googleHealthSummary.style.color = 'var(--text-accent)';
+        
+        const googleHealthDetailsContainer = googleHealthDetails.createDiv();
+        googleHealthDetailsContainer.style.paddingTop = '10px';
+        
+        new obsidian.Setting(googleHealthDetailsContainer)
+            .setName('Enable Google Health API')
+            .setDesc('Toggle integration with Google Fitness/Health APIs.')
+            .addToggle(toggle => toggle
+                .setValue(this.plugin.settings.dataSourceApi === 'google-health')
+                .onChange(async (value) => {
+                    this.plugin.settings.dataSourceApi = value ? 'google-health' : 'none';
+                    await this.plugin.saveSettings();
+                    this.display();
+                }));
+
+        if (this.plugin.settings.dataSourceApi === 'google-health') {
+            const googleHealthContainer = googleHealthDetailsContainer.createDiv();
+            googleHealthContainer.style.padding = '15px';
+            googleHealthContainer.style.border = '1px solid var(--background-modifier-border)';
+            googleHealthContainer.style.borderRadius = '8px';
+            googleHealthContainer.style.marginTop = '10px';
+            googleHealthContainer.style.backgroundColor = 'var(--background-secondary)';
+
+            // Clickable Links for Local Resources
+            const localLinksDiv = googleHealthContainer.createDiv();
+            localLinksDiv.style.marginBottom = '15px';
+            localLinksDiv.style.padding = '10px';
+            localLinksDiv.style.border = '1px dashed var(--interactive-accent)';
+            localLinksDiv.style.borderRadius = '6px';
+            localLinksDiv.style.fontSize = '0.9em';
+            localLinksDiv.innerHTML = `
+                <b>📁 Local Integration Resources:</b><br>
+                • <b>Food Registry JSON:</b> <a href="file:///c:/Users/jare0/Documents/antigravity/omni-logger/health_go_to_items.json">health_go_to_items.json</a> (Edit go-to items & nutritional metadata)<br>
+                • <b>Log & Sync Script:</b> <a href="file:///c:/Users/jare0/Documents/antigravity/omni-logger/google_health_pull.py">google_health_pull.py</a> (Configured to map caffeine/alcohol to your chosen destination formatting: YAML, inline key::value, or Bottom Append)
+            `;
+
+            // Credentials JSON
+            new obsidian.Setting(googleHealthContainer)
+                .setName('Google Credentials JSON')
+                .setDesc('Paste the full {"web":{...}} JSON downloaded from Google Cloud Console.')
+                .addText(text => {
+                    text.inputEl.type = 'password';
+                    text.setPlaceholder('Paste full JSON here');
+                    
+                    let secretId = this.plugin.settings.googleCredentialsId || 'omni-logger-google-credentials';
+                    this.plugin.getSecret(secretId, 'googleCredentials').then(secret => {
+                        if (!secret) {
+                            return this.plugin.getSecret('schedule-assistant-google-credentials', 'googleCredentials').then(async fbSecret => {
+                                if (!fbSecret) {
+                                    return this.plugin.getSecret('timeblocker-google-credentials', 'googleCredentials').then(async tbSecret => {
+                                        if (tbSecret) {
+                                            await this.plugin.setSecret('omni-logger-google-credentials', 'googleCredentials', tbSecret);
+                                            this.plugin.settings.googleCredentialsId = 'omni-logger-google-credentials';
+                                            await this.plugin.saveSettings();
+                                            return tbSecret;
+                                        }
+                                        return '';
+                                    });
+                                }
+                                await this.plugin.setSecret('omni-logger-google-credentials', 'googleCredentials', fbSecret);
+                                this.plugin.settings.googleCredentialsId = 'omni-logger-google-credentials';
+                                await this.plugin.saveSettings();
+                                return fbSecret;
+                            });
+                        }
+                        return secret;
+                    }).then(secret => {
+                        if (secret && secret.toLowerCase().includes('client_id')) {
+                            let displayStr = secret.substring(0, 15) + '...' + secret.substring(secret.length - 5);
+                            text.setValue(displayStr);
+                        }
+                    });
+                    
+                    text.onChange(async (value) => {
+                        if (value && value.length > 50 && value.toLowerCase().includes('client_id')) {
+                            let secretId = 'omni-logger-google-credentials';
+                            await this.plugin.setSecret(secretId, 'googleCredentials', value);
+                            this.plugin.settings.googleCredentialsId = secretId;
+                            await this.plugin.saveSettings();
+                            let displayStr = value.substring(0, 15) + '...' + value.substring(value.length - 5);
+                            text.setValue(displayStr);
+                            new obsidian.Notice("Google Credentials securely stored!");
+                        } else if (value.trim() === '') {
+                            let secretId = this.plugin.settings.googleCredentialsId || 'omni-logger-google-credentials';
+                            await this.plugin.setSecret(secretId, 'googleCredentials', '');
+                        }
+                    });
+                });
+
+            // Collapsible Instructions
+            const instructionsDetails = googleHealthContainer.createEl('details');
+            instructionsDetails.style.marginBottom = '20px';
+            const summary = instructionsDetails.createEl('summary', { text: 'How to get Google Cloud Credentials' });
+            summary.style.cursor = 'pointer';
+            summary.style.fontWeight = 'bold';
+            summary.style.color = 'var(--text-accent)';
+            
+            const instrContent = instructionsDetails.createDiv();
+            instrContent.style.padding = '10px';
+            instrContent.style.backgroundColor = 'var(--background-primary)';
+            instrContent.style.borderRadius = '5px';
+            instrContent.style.marginTop = '10px';
+            instrContent.innerHTML = `
+                <ol style="margin-top: 0;">
+                    <li>Go to <a href="https://console.cloud.google.com/">Google Cloud Console</a>.</li>
+                    <li>Create a new project (or use an existing one).</li>
+                    <li>Enable the <b>Fitness API</b> in APIs & Services.</li>
+                    <li>Go to <b>Credentials</b> -> Create Credentials -> <b>OAuth client ID</b>.</li>
+                    <li>Select <b>Web application</b> (or Desktop app).</li>
+                    <li>If Web Application, add <code>http://localhost:8092</code> to Authorized redirect URIs.</li>
+                    <li>Click Create, then click <b>Download JSON</b>.</li>
+                    <li>Open the JSON file in Notepad, copy everything, and paste it into the field above.</li>
+                </ol>
+            `;
+
+            // Authorization Tools
+            const buttonsSetting = new obsidian.Setting(googleHealthContainer)
+                .setName('Authorization Tools')
+                .setDesc('Connect or test your Google Health API integration.');
+            
+            buttonsSetting.addButton(btn => {
+                btn.setButtonText("Connect Google Account")
+                   .setCta()
+                   .onClick(() => {
+                       this.plugin.startGoogleOAuthFlow('health').catch(e => {
+                           new obsidian.Notice("Failed to start OAuth: " + e.message);
+                       });
+                   });
+            });
+            
+            buttonsSetting.addButton(btn => {
+                btn.setButtonText("Test Connection")
+                   .onClick(async () => {
+                       btn.setButtonText("Testing...");
+                       try {
+                           const token = await this.plugin.getGoogleAccessToken();
+                           if (!token) throw new Error("No access token found.");
+                           
+                           const res = await requestWithTimeout({
+                               url: 'https://www.googleapis.com/oauth2/v3/tokeninfo?access_token=' + token,
+                               method: 'GET'
+                           });
+                           
+                           if (res.status === 200) {
+                               new obsidian.Notice("Google Health connection successful!");
+                               btn.setButtonText("Success!");
+                           } else {
+                               throw new Error(`Google API returned status ${res.status}`);
+                           }
+                           setTimeout(() => btn.setButtonText("Test Connection"), 2000);
+                       } catch (e) {
+                           new obsidian.Notice("Connection failed: " + e.message);
+                           btn.setButtonText("Failed");
+                           setTimeout(() => btn.setButtonText("Test Connection"), 2000);
+                       }
+                   });
+            });
+
+            // OAuth Scopes configuration
+            googleHealthContainer.createEl('h4', { text: 'Google Health OAuth Scopes' });
+            const scopesDiv = googleHealthContainer.createDiv();
+            scopesDiv.style.display = 'flex';
+            scopesDiv.style.flexDirection = 'column';
+            scopesDiv.style.gap = '8px';
+            scopesDiv.style.marginBottom = '20px';
+            scopesDiv.style.padding = '10px';
+            scopesDiv.style.border = '1px solid var(--background-modifier-border)';
+            scopesDiv.style.borderRadius = '6px';
+            scopesDiv.style.backgroundColor = 'var(--background-primary)';
+            
+            const availableScopes = [
+                { label: "Sleep (Read)", scope: "https://www.googleapis.com/auth/googlehealth.sleep.readonly" },
+                { label: "HRV & Vitals (Read)", scope: "https://www.googleapis.com/auth/googlehealth.health_metrics_and_measurements.readonly" },
+                { label: "Nutrition (Read)", scope: "https://www.googleapis.com/auth/googlehealth.nutrition.readonly" },
+                { label: "Nutrition (Write)", scope: "https://www.googleapis.com/auth/googlehealth.nutrition.writeonly" }
+            ];
+            
+            availableScopes.forEach(item => {
+                const row = scopesDiv.createDiv();
+                row.style.display = 'flex';
+                row.style.alignItems = 'center';
+                row.style.gap = '8px';
+                
+                const chk = row.createEl('input', { type: 'checkbox' });
+                const userScopes = this.plugin.settings.requestedScopes || DEFAULT_SETTINGS.requestedScopes;
+                chk.checked = userScopes.includes(item.scope);
+                
+                chk.onchange = async () => {
+                    let current = this.plugin.settings.requestedScopes || [...DEFAULT_SETTINGS.requestedScopes];
+                    if (chk.checked) {
+                        if (!current.includes(item.scope)) current.push(item.scope);
+                    } else {
+                        current = current.filter(s => s !== item.scope);
+                    }
+                    this.plugin.settings.requestedScopes = current;
+                    await this.plugin.saveSettings();
+                };
+                
+                const label = row.createEl('label', { text: item.label });
+                label.style.fontSize = '0.9em';
+            });
+
+            // Metrics Synchronization configuration
+            googleHealthContainer.createEl('h4', { text: 'Synced Health Metrics & Custom Targets' });
+            const metricsContainer = googleHealthContainer.createDiv();
+            metricsContainer.style.display = 'flex';
+            metricsContainer.style.flexDirection = 'column';
+            metricsContainer.style.gap = '10px';
+            metricsContainer.style.marginBottom = '25px';
+            
+            const currentMetrics = this.plugin.settings.healthSyncConfig || DEFAULT_SETTINGS.healthSyncConfig;
+            
+            Object.keys(currentMetrics).forEach(mKey => {
+                const mConfig = currentMetrics[mKey];
+                const row = metricsContainer.createDiv();
+                row.style.display = 'flex';
+                row.style.alignItems = 'center';
+                row.style.justifyContent = 'space-between';
+                row.style.padding = '8px';
+                row.style.border = '1px solid var(--background-modifier-border)';
+                row.style.borderRadius = '6px';
+                row.style.backgroundColor = 'var(--background-primary)';
+                
+                const labelSpan = row.createSpan({ text: mKey.toUpperCase() });
+                labelSpan.style.fontWeight = 'bold';
+                labelSpan.style.width = '120px';
+                
+                const controlsDiv = row.createDiv();
+                controlsDiv.style.display = 'flex';
+                controlsDiv.style.alignItems = 'center';
+                controlsDiv.style.gap = '15px';
+                
+                // Enabled checkbox
+                const enabledChk = controlsDiv.createEl('input', { type: 'checkbox' });
+                enabledChk.checked = mConfig.enabled;
+                enabledChk.onchange = async () => {
+                    mConfig.enabled = enabledChk.checked;
+                    await this.plugin.saveSettings();
+                };
+                
+                // Destination select dropdown
+                const destSelect = controlsDiv.createEl('select');
+                destSelect.createEl('option', { value: 'frontmatter', text: 'YAML Frontmatter' });
+                destSelect.createEl('option', { value: 'dataview', text: 'Inline Dataview (key::)' });
+                destSelect.createEl('option', { value: 'append-log', text: 'Append to Bottom' });
+                destSelect.value = mConfig.destination || 'frontmatter';
+                destSelect.onchange = async () => {
+                    mConfig.destination = destSelect.value;
+                    await this.plugin.saveSettings();
+                };
+                
+                // Key input textbox
+                const keyInput = controlsDiv.createEl('input', { type: 'text' });
+                keyInput.style.width = '130px';
+                keyInput.value = mConfig.key || '';
+                keyInput.placeholder = 'Dest Property Key';
+                keyInput.onchange = async () => {
+                    mConfig.key = keyInput.value.trim();
+                    await this.plugin.saveSettings();
+                };
+            });
+
+            // Food Logging Wizard launcher
+            new obsidian.Setting(googleHealthContainer)
+                .setName('Food Logging & Registry Wizard')
+                .setDesc('Launch the interactive UI to add new food entries to the JSON registry and post logs directly to the Health API.')
+                .addButton(btn => {
+                    btn.setButtonText("Open Food Ingestion UI")
+                       .setCta()
+                       .onClick(() => {
+                           new OmniFoodLoggerModal(this.app, this.plugin).open();
+                       });
+                });
+
+            // Collapsible Ingestion Prompts
+            const promptsDetails = googleHealthContainer.createEl('details');
+            promptsDetails.style.marginTop = '15px';
+            promptsDetails.style.marginBottom = '15px';
+            promptsDetails.style.border = '1px solid var(--background-modifier-border)';
+            promptsDetails.style.borderRadius = '6px';
+            promptsDetails.style.padding = '8px';
+            
+            const promptsSummary = promptsDetails.createEl('summary', { text: '⚙️ LLM Ingestion Formatting Prompts' });
+            promptsSummary.style.cursor = 'pointer';
+            promptsSummary.style.fontWeight = 'bold';
+            promptsSummary.style.color = 'var(--text-accent)';
+            
+            const promptsContainer = promptsDetails.createDiv();
+            promptsContainer.style.paddingTop = '10px';
+            
+            new obsidian.Setting(promptsContainer)
+                .setName('Sleep Ingestion Prompt')
+                .setDesc('Instructions for parsing sleep data payload.')
+                .addTextArea(text => {
+                    text.inputEl.style.width = '100%';
+                    text.inputEl.style.minHeight = '80px';
+                    text.setValue(this.plugin.settings.googleHealthSleepPrompt || DEFAULT_SETTINGS.googleHealthSleepPrompt);
+                    text.onChange(async (value) => {
+                        this.plugin.settings.googleHealthSleepPrompt = value;
+                        await this.plugin.saveSettings();
+                    });
+                });
+                
+            new obsidian.Setting(promptsContainer)
+                .setName('Vitals & HRV Ingestion Prompt')
+                .setDesc('Instructions for parsing HRV / vitals data payload.')
+                .addTextArea(text => {
+                    text.inputEl.style.width = '100%';
+                    text.inputEl.style.minHeight = '80px';
+                    text.setValue(this.plugin.settings.googleHealthVitalsPrompt || DEFAULT_SETTINGS.googleHealthVitalsPrompt);
+                    text.onChange(async (value) => {
+                        this.plugin.settings.googleHealthVitalsPrompt = value;
+                        await this.plugin.saveSettings();
+                    });
+                });
+                
+            new obsidian.Setting(promptsContainer)
+                .setName('Nutrition Ingestion Prompt')
+                .setDesc('Instructions for parsing food logs payload.')
+                .addTextArea(text => {
+                    text.inputEl.style.width = '100%';
+                    text.inputEl.style.minHeight = '80px';
+                    text.setValue(this.plugin.settings.googleHealthNutritionPrompt || DEFAULT_SETTINGS.googleHealthNutritionPrompt);
+                    text.onChange(async (value) => {
+                        this.plugin.settings.googleHealthNutritionPrompt = value;
+                        await this.plugin.saveSettings();
+                    });
+                });
+                
+            new obsidian.Setting(promptsContainer)
+                .setName('Hydration Ingestion Prompt')
+                .setDesc('Instructions for parsing water/hydration data payload.')
+                .addTextArea(text => {
+                    text.inputEl.style.width = '100%';
+                    text.inputEl.style.minHeight = '80px';
+                    text.setValue(this.plugin.settings.googleHealthHydrationPrompt || DEFAULT_SETTINGS.googleHealthHydrationPrompt);
+                    text.onChange(async (value) => {
+                        this.plugin.settings.googleHealthHydrationPrompt = value;
+                        await this.plugin.saveSettings();
+                    });
+                });
+        }
+
+        // ==========================================
+        // 2. TEMPLATE GENERATOR
+        // ==========================================
+        containerEl.createEl('hr');
         containerEl.createEl('h3', { text: 'Template Generator' });
         
         new obsidian.Setting(containerEl)
@@ -1742,7 +2353,9 @@ class OmniLoggerSettingTab extends obsidian.PluginSettingTab {
                     }));
         }
 
-        // --- LOG EXECUTOR ---
+        // ==========================================
+        // 3. LOG EXECUTOR
+        // ==========================================
         containerEl.createEl('hr');
         containerEl.createEl('h3', { text: 'Log Executor' });
         
@@ -1872,11 +2485,25 @@ class OmniLoggerSettingTab extends obsidian.PluginSettingTab {
                     }));
         }
 
-        // --- CUSTOM TEMPLATES ---
+        // ==========================================
+        // 4. CUSTOM LOGS & TEMPLATES (Collapsible)
+        // ==========================================
         containerEl.createEl('hr');
-        containerEl.createEl('h3', { text: 'Custom Templates' });
+        const customLogsDetails = containerEl.createEl('details');
+        customLogsDetails.style.marginBottom = '20px';
+        customLogsDetails.style.border = '1px solid var(--background-modifier-border)';
+        customLogsDetails.style.borderRadius = '6px';
+        customLogsDetails.style.padding = '8px';
+        const customLogsSummary = customLogsDetails.createEl('summary', { text: '🛠️ Custom Logs & Templates' });
+        customLogsSummary.style.cursor = 'pointer';
+        customLogsSummary.style.fontSize = '1.2em';
+        customLogsSummary.style.fontWeight = 'bold';
+        customLogsSummary.style.color = 'var(--text-accent)';
+        
+        const customLogsDetailsContainer = customLogsDetails.createDiv();
+        customLogsDetailsContainer.style.paddingTop = '10px';
 
-        new obsidian.Setting(containerEl)
+        new obsidian.Setting(customLogsDetailsContainer)
             .setName('Ingredients Folder')
             .setDesc('Directory in the vault where custom template ingredients are stored.')
             .addText(text => text
@@ -1887,7 +2514,7 @@ class OmniLoggerSettingTab extends obsidian.PluginSettingTab {
                     await this.plugin.saveSettings();
                 }));
 
-        const templatesContainer = containerEl.createDiv();
+        const templatesContainer = customLogsDetailsContainer.createDiv();
         const renderTemplates = () => {
             templatesContainer.empty();
             const templates = this.plugin.settings.customTemplates || [];
@@ -1981,7 +2608,7 @@ class OmniLoggerSettingTab extends obsidian.PluginSettingTab {
         };
         renderTemplates();
 
-        const addTemplateBtn = containerEl.createEl('button', { text: '+ Create New Template via LLM', cls: 'mod-cta' });
+        const addTemplateBtn = customLogsDetailsContainer.createEl('button', { text: '+ Create New Template via LLM', cls: 'mod-cta' });
         addTemplateBtn.style.marginTop = '10px';
         addTemplateBtn.onclick = () => {
             new OmniTemplateCreatorModal(this.app, this.plugin, async () => {
@@ -1989,180 +2616,6 @@ class OmniLoggerSettingTab extends obsidian.PluginSettingTab {
                 renderTemplates();
             }).open();
         };
-
-        // --- GOOGLE HEALTH INTEGRATION ---
-        containerEl.createEl('hr');
-        containerEl.createEl('h3', { text: 'Google Health Integration' });
-        
-        new obsidian.Setting(containerEl)
-            .setName('Enable Google Health API')
-            .setDesc('Toggle integration with Google Fitness/Health APIs.')
-            .addToggle(toggle => toggle
-                .setValue(this.plugin.settings.dataSourceApi === 'google-health')
-                .onChange(async (value) => {
-                    this.plugin.settings.dataSourceApi = value ? 'google-health' : 'none';
-                    await this.plugin.saveSettings();
-                    this.display();
-                }));
-
-        if (this.plugin.settings.dataSourceApi === 'google-health') {
-            const googleHealthContainer = containerEl.createDiv();
-            googleHealthContainer.style.padding = '15px';
-            googleHealthContainer.style.border = '1px solid var(--background-modifier-border)';
-            googleHealthContainer.style.borderRadius = '8px';
-            googleHealthContainer.style.marginTop = '10px';
-            googleHealthContainer.style.backgroundColor = 'var(--background-secondary)';
-
-            // Credentials JSON
-            new obsidian.Setting(googleHealthContainer)
-                .setName('Google Credentials JSON')
-                .setDesc('Paste the full {"web":{...}} JSON downloaded from Google Cloud Console.')
-                .addText(text => {
-                    text.inputEl.type = 'password';
-                    text.setPlaceholder('Paste full JSON here');
-                    
-                    let secretId = this.plugin.settings.googleCredentialsId || 'omni-logger-google-credentials';
-                    this.plugin.getSecret(secretId, 'googleCredentials').then(secret => {
-                        if (!secret) {
-                            return this.plugin.getSecret('schedule-assistant-google-credentials', 'googleCredentials').then(async fbSecret => {
-                                if (!fbSecret) {
-                                    return this.plugin.getSecret('timeblocker-google-credentials', 'googleCredentials').then(async tbSecret => {
-                                        if (tbSecret) {
-                                            await this.plugin.setSecret('omni-logger-google-credentials', 'googleCredentials', tbSecret);
-                                            this.plugin.settings.googleCredentialsId = 'omni-logger-google-credentials';
-                                            await this.plugin.saveSettings();
-                                            return tbSecret;
-                                        }
-                                        return '';
-                                    });
-                                }
-                                await this.plugin.setSecret('omni-logger-google-credentials', 'googleCredentials', fbSecret);
-                                this.plugin.settings.googleCredentialsId = 'omni-logger-google-credentials';
-                                await this.plugin.saveSettings();
-                                return fbSecret;
-                            });
-                        }
-                        return secret;
-                    }).then(secret => {
-                        if (secret && secret.toLowerCase().includes('client_id')) {
-                            let displayStr = secret.substring(0, 15) + '...' + secret.substring(secret.length - 5);
-                            text.setValue(displayStr);
-                        }
-                    });
-                    
-                    text.onChange(async (value) => {
-                        if (value && value.length > 50 && value.toLowerCase().includes('client_id')) {
-                            let secretId = 'omni-logger-google-credentials';
-                            await this.plugin.setSecret(secretId, 'googleCredentials', value);
-                            this.plugin.settings.googleCredentialsId = secretId;
-                            await this.plugin.saveSettings();
-                            let displayStr = value.substring(0, 15) + '...' + value.substring(value.length - 5);
-                            text.setValue(displayStr);
-                            new obsidian.Notice("Google Credentials securely stored!");
-                        } else if (value.trim() === '') {
-                            let secretId = this.plugin.settings.googleCredentialsId || 'omni-logger-google-credentials';
-                            await this.plugin.setSecret(secretId, 'googleCredentials', '');
-                        }
-                    });
-                });
-
-            // Collapsible Instructions
-            const instructionsDetails = googleHealthContainer.createEl('details');
-            instructionsDetails.style.marginBottom = '20px';
-            const summary = instructionsDetails.createEl('summary', { text: 'How to get Google Cloud Credentials' });
-            summary.style.cursor = 'pointer';
-            summary.style.fontWeight = 'bold';
-            summary.style.color = 'var(--text-accent)';
-            
-            const instrContent = instructionsDetails.createDiv();
-            instrContent.style.padding = '10px';
-            instrContent.style.backgroundColor = 'var(--background-primary)';
-            instrContent.style.borderRadius = '5px';
-            instrContent.style.marginTop = '10px';
-            instrContent.innerHTML = `
-                <ol style="margin-top: 0;">
-                    <li>Go to <a href="https://console.cloud.google.com/">Google Cloud Console</a>.</li>
-                    <li>Create a new project (or use an existing one).</li>
-                    <li>Enable the <b>Fitness API</b> in APIs & Services.</li>
-                    <li>Go to <b>Credentials</b> -> Create Credentials -> <b>OAuth client ID</b>.</li>
-                    <li>Select <b>Web application</b> (or Desktop app).</li>
-                    <li>If Web Application, add <code>http://localhost:8092</code> to Authorized redirect URIs.</li>
-                    <li>Click Create, then click <b>Download JSON</b>.</li>
-                    <li>Open the JSON file in Notepad, copy everything, and paste it into the field above.</li>
-                </ol>
-            `;
-
-            // Authorization Tools
-            const buttonsSetting = new obsidian.Setting(googleHealthContainer)
-                .setName('Authorization Tools')
-                .setDesc('Connect or test your Google Health API integration.');
-            
-            buttonsSetting.addButton(btn => {
-                btn.setButtonText("Connect Google Account")
-                   .setCta()
-                   .onClick(() => {
-                       this.plugin.startGoogleOAuthFlow('health').catch(e => {
-                           new obsidian.Notice("Failed to start OAuth: " + e.message);
-                       });
-                   });
-            });
-            
-            buttonsSetting.addButton(btn => {
-                btn.setButtonText("Test Connection")
-                   .onClick(async () => {
-                       btn.setButtonText("Testing...");
-                       try {
-                           const token = await this.plugin.getGoogleAccessToken();
-                           if (!token) throw new Error("No access token found.");
-                           
-                           const res = await requestWithTimeout({
-                               url: 'https://www.googleapis.com/oauth2/v3/tokeninfo?access_token=' + token,
-                               method: 'GET'
-                           });
-                           
-                           if (res.status === 200) {
-                               new obsidian.Notice("Google Health connection successful!");
-                               btn.setButtonText("Success!");
-                           } else {
-                               throw new Error(`Google API returned status ${res.status}`);
-                           }
-                           setTimeout(() => btn.setButtonText("Test Connection"), 2000);
-                       } catch (e) {
-                           new obsidian.Notice("Connection failed: " + e.message);
-                           btn.setButtonText("Failed");
-                           setTimeout(() => btn.setButtonText("Test Connection"), 2000);
-                       }
-                   });
-            });
-
-            // Destination Dropdown
-            new obsidian.Setting(googleHealthContainer)
-                .setName('Google Health Destination')
-                .setDesc('Where to write the extracted health data in your Daily Note.')
-                .addDropdown(dropdown => dropdown
-                    .addOption('dataview', 'Dataview Inline (Key:: Value)')
-                    .addOption('frontmatter', 'YAML Frontmatter')
-                    .addOption('append-log', 'Append to Bottom (List)')
-                    .setValue(this.plugin.settings.googleHealthDestination || 'dataview')
-                    .onChange(async (value) => {
-                        this.plugin.settings.googleHealthDestination = value;
-                        await this.plugin.saveSettings();
-                    }));
-
-            // Formatting Prompt
-            new obsidian.Setting(googleHealthContainer)
-                .setName('Google Health Formatting Prompt')
-                .setDesc('Instructions for the LLM on how to parse the raw Google API JSON payload. IMPORTANT: Your prompt must tell the LLM to output a raw JSON object so the plugin can map it to your destination.')
-                .addTextArea(text => {
-                    text.inputEl.style.width = '100%';
-                    text.inputEl.style.minHeight = '100px';
-                    text.setValue(this.plugin.settings.googleHealthPrompt || 'Examine the raw Google Fitness API JSON payload representing my sleep sessions for today. Extract the longest sleep session and calculate the total sleep duration in hours and minutes. Your output MUST be a valid JSON object with keys like "Sleep" and "Wakeup". Do not wrap in markdown blocks. Example: { "Sleep": "7h 30m", "Wakeup": "07:00 AM" }');
-                    text.onChange(async (value) => {
-                        this.plugin.settings.googleHealthPrompt = value;
-                        await this.plugin.saveSettings();
-                    });
-                });
-        }
     }
 }
 class OmniLoggerModal extends obsidian.Modal {
@@ -2601,6 +3054,241 @@ class OmniTemplateCreatorModal extends obsidian.Modal {
         if (this.pasteListener) {
             this.contentEl.removeEventListener('paste', this.pasteListener);
         }
+        this.contentEl.empty();
+    }
+}
+
+class OmniFoodLoggerModal extends obsidian.Modal {
+    constructor(app, plugin) {
+        super(app);
+        this.plugin = plugin;
+        this.selectedFoodId = "";
+        this.logAmount = 1.0;
+        
+        // Form fields for new item
+        this.newId = "";
+        this.newName = "";
+        this.newCategory = "nutrition";
+        this.newUnit = "serving";
+        this.newProtein = 0;
+        this.newCalories = 0;
+        this.newCaffeine = 0;
+        this.newAlcohol = 0;
+    }
+
+    async onOpen() {
+        const { contentEl } = this;
+        contentEl.empty();
+        
+        contentEl.createEl('h2', { text: '🥗 Google Health Food Logger & Registry', cls: 'omni-modal-title' });
+        
+        const tabHeader = contentEl.createDiv({ cls: 'omni-tab-header' });
+        tabHeader.style.display = 'flex';
+        tabHeader.style.gap = '15px';
+        tabHeader.style.marginBottom = '15px';
+        tabHeader.style.borderBottom = '1px solid var(--background-modifier-border)';
+        tabHeader.style.paddingBottom = '8px';
+        
+        const tabLog = tabHeader.createSpan({ text: 'Log Food' });
+        const tabAdd = tabHeader.createSpan({ text: 'Add to Registry' });
+        
+        tabLog.style.cursor = 'pointer';
+        tabLog.style.fontWeight = 'bold';
+        tabLog.style.color = 'var(--text-accent)';
+        
+        tabAdd.style.cursor = 'pointer';
+        tabAdd.style.color = 'var(--text-muted)';
+        
+        const mainContainer = contentEl.createDiv();
+        
+        const renderLogTab = async () => {
+            mainContainer.empty();
+            tabLog.style.color = 'var(--text-accent)';
+            tabLog.style.fontWeight = 'bold';
+            tabAdd.style.color = 'var(--text-muted)';
+            tabAdd.style.fontWeight = 'normal';
+            
+            const items = await this.plugin.loadGoToItems();
+            
+            if (items.length === 0) {
+                mainContainer.createEl('p', { text: 'No go-to food items found in registry JSON.' });
+                return;
+            }
+            
+            this.selectedFoodId = items[0].id;
+            
+            new obsidian.Setting(mainContainer)
+                .setName('Select Food / Drink')
+                .setDesc('Choose from your registry of custom food items.')
+                .addDropdown(dropdown => {
+                    items.forEach(item => {
+                        dropdown.addOption(item.id, `${item.name} (${item.unit})`);
+                    });
+                    dropdown.setValue(this.selectedFoodId);
+                    dropdown.onChange(val => this.selectedFoodId = val);
+                });
+                
+            new obsidian.Setting(mainContainer)
+                .setName('Amount / Servings')
+                .setDesc('Enter the number of servings to log.')
+                .addText(text => text
+                    .setValue(String(this.logAmount))
+                    .onChange(val => {
+                        const parsed = parseFloat(val);
+                        if (!isNaN(parsed)) this.logAmount = parsed;
+                    })
+                );
+                
+            const actionRow = mainContainer.createDiv();
+            actionRow.style.marginTop = '20px';
+            actionRow.style.display = 'flex';
+            actionRow.style.justifyContent = 'flex-end';
+            actionRow.style.gap = '10px';
+            
+            const cancelBtn = actionRow.createEl('button', { text: 'Cancel', cls: 'omni-btn btn-cancel' });
+            cancelBtn.onclick = () => this.close();
+            
+            const logBtn = actionRow.createEl('button', { text: 'Log to Google Health', cls: 'omni-btn btn-process' });
+            logBtn.onclick = async () => {
+                logBtn.disabled = true;
+                logBtn.setText('Logging...');
+                try {
+                    const dailyFile = this.plugin.getDailyNoteFile();
+                    if (!dailyFile) {
+                        new obsidian.Notice("Today's Daily Note not found!");
+                        logBtn.disabled = false;
+                        logBtn.setText('Log to Google Health');
+                        return;
+                    }
+                    const notePath = this.plugin.app.vault.adapter.getFullPath(dailyFile.path);
+                    
+                    // Trigger log_nutrition.py script via plugin runPythonScript
+                    const scriptPath = 'log_nutrition.py';
+                    const args = ` --file "${notePath}" --id ${this.selectedFoodId} --amount ${this.logAmount}`;
+                    
+                    await this.plugin.runPythonScript(scriptPath + args);
+                    new obsidian.Notice("Successfully logged via HealthAPI.");
+                    this.close();
+                } catch(e) {
+                    new obsidian.Notice("Failed to log food: " + e.message);
+                    logBtn.disabled = false;
+                    logBtn.setText('Log to Google Health');
+                }
+            };
+        };
+        
+        const renderAddTab = () => {
+            mainContainer.empty();
+            tabAdd.style.color = 'var(--text-accent)';
+            tabAdd.style.fontWeight = 'bold';
+            tabLog.style.color = 'var(--text-muted)';
+            tabLog.style.fontWeight = 'normal';
+            
+            new obsidian.Setting(mainContainer)
+                .setName('Unique ID')
+                .setDesc('E.g. "espresso_double" or "peanut_butter"')
+                .addText(text => text.onChange(val => this.newId = val.trim().toLowerCase().replace(/\s+/g, '_')));
+                
+            new obsidian.Setting(mainContainer)
+                .setName('Display Name')
+                .setDesc('E.g. "Double Espresso" or "Organic Peanut Butter"')
+                .addText(text => text.onChange(val => this.newName = val.trim()));
+                
+            new obsidian.Setting(mainContainer)
+                .setName('Category')
+                .addDropdown(dropdown => dropdown
+                    .addOption('caffeine', 'Caffeine')
+                    .addOption('alcohol', 'Alcohol')
+                    .addOption('nutrition', 'General Nutrition')
+                    .setValue(this.newCategory)
+                    .onChange(val => this.newCategory = val)
+                );
+                
+            new obsidian.Setting(mainContainer)
+                .setName('Unit Name')
+                .setDesc('E.g. "shot", "can", "serving"')
+                .addText(text => text.setValue(this.newUnit).onChange(val => this.newUnit = val.trim()));
+                
+            new obsidian.Setting(mainContainer)
+                .setName('Protein (g per serving)')
+                .addText(text => text.setValue('0').onChange(val => this.newProtein = parseFloat(val) || 0));
+                
+            new obsidian.Setting(mainContainer)
+                .setName('Calories (kcal per serving)')
+                .addText(text => text.setValue('0').onChange(val => this.newCalories = parseFloat(val) || 0));
+                
+            new obsidian.Setting(mainContainer)
+                .setName('Caffeine (mg per serving)')
+                .addText(text => text.setValue('0').onChange(val => this.newCaffeine = parseFloat(val) || 0));
+                
+            new obsidian.Setting(mainContainer)
+                .setName('Alcohol (g per serving)')
+                .addText(text => text.setValue('0').onChange(val => this.newAlcohol = parseFloat(val) || 0));
+                
+            const actionRow = mainContainer.createDiv();
+            actionRow.style.marginTop = '20px';
+            actionRow.style.display = 'flex';
+            actionRow.style.justifyContent = 'flex-end';
+            actionRow.style.gap = '10px';
+            
+            const cancelBtn = actionRow.createEl('button', { text: 'Cancel', cls: 'omni-btn btn-cancel' });
+            cancelBtn.onclick = () => this.close();
+            
+            const saveBtn = actionRow.createEl('button', { text: 'Save to Registry', cls: 'omni-btn btn-process' });
+            saveBtn.onclick = async () => {
+                if (!this.newId || !this.newName) {
+                    new obsidian.Notice("Please enter ID and Display Name!");
+                    return;
+                }
+                
+                const items = await this.plugin.loadGoToItems();
+                if (items.some(item => item.id === this.newId)) {
+                    new obsidian.Notice("A food item with this ID already exists!");
+                    return;
+                }
+                
+                // Construct nutrients payload
+                const nutrients = {};
+                let healthType = "nutrition";
+                
+                if (this.newCategory === "caffeine" && this.newCaffeine > 0) {
+                    nutrients["caffeine"] = this.newCaffeine / 1000.0; // mg to g
+                } else if (this.newCategory === "alcohol" && this.newAlcohol > 0) {
+                    nutrients["alcohol"] = this.newAlcohol;
+                    healthType = "alcohol_consumption";
+                }
+                
+                if (this.newProtein > 0) nutrients["protein"] = this.newProtein;
+                if (this.newCalories > 0) nutrients["energy"] = this.newCalories;
+                
+                const newItem = {
+                    id: this.newId,
+                    name: this.newName,
+                    category: this.newCategory,
+                    default_amount: 1,
+                    unit: this.newUnit,
+                    caffeine_mg: this.newCaffeine > 0 ? this.newCaffeine : undefined,
+                    alcohol_g: this.newAlcohol > 0 ? this.newAlcohol : undefined,
+                    protein_g: this.newProtein > 0 ? this.newProtein : undefined,
+                    calories: this.newCalories > 0 ? this.newCalories : undefined,
+                    health_connect_type: healthType,
+                    nutrients: nutrients
+                };
+                
+                items.push(newItem);
+                await this.plugin.saveGoToItems(items);
+                new obsidian.Notice(`Added ${this.newName} to Registry!`);
+                renderLogTab();
+            };
+        };
+        
+        tabLog.onclick = renderLogTab;
+        tabAdd.onclick = renderAddTab;
+        
+        renderLogTab();
+    }
+
+    onClose() {
         this.contentEl.empty();
     }
 }
