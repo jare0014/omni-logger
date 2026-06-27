@@ -1,6 +1,20 @@
 import os
 import re
 import sys
+
+if sys.platform == 'win32':
+    py_dir = os.path.dirname(sys.executable)
+    dlls_dir = os.path.join(py_dir, 'DLLs')
+    if os.path.exists(dlls_dir):
+        try:
+            os.add_dll_directory(dlls_dir)
+        except Exception:
+            pass
+    try:
+        os.add_dll_directory(py_dir)
+    except Exception:
+        pass
+    os.environ['PATH'] = dlls_dir + os.path.pathsep + py_dir + os.path.pathsep + os.environ.get('PATH', '')
 import json
 import base64
 import threading

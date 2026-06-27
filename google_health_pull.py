@@ -1,6 +1,20 @@
 import os
 import re
 import sys
+
+if sys.platform == 'win32':
+    py_dir = os.path.dirname(sys.executable)
+    dlls_dir = os.path.join(py_dir, 'DLLs')
+    if os.path.exists(dlls_dir):
+        try:
+            os.add_dll_directory(dlls_dir)
+        except Exception:
+            pass
+    try:
+        os.add_dll_directory(py_dir)
+    except Exception:
+        pass
+    os.environ['PATH'] = dlls_dir + os.path.pathsep + py_dir + os.path.pathsep + os.environ.get('PATH', '')
 import json
 import time
 import base64
@@ -25,9 +39,6 @@ FITBIT_TOKEN_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fi
 # --- GOOGLE OAUTH ACCESS ---
 def get_google_access_token():
     token_path = TOKEN_PATH
-    if not os.path.exists(token_path):
-        token_path = FALLBACK_TOKEN_PATH
-        
     if not os.path.exists(token_path):
         raise FileNotFoundError(
             f"Google Health token.json not found. Please authorize through Omni-Logger or Schedule Assistant settings first."
@@ -80,13 +91,14 @@ def get_google_access_token():
 def get_google_health_data(token, date_str):
     headers = {"Authorization": f"Bearer {token}"}
     
-    date_dt = datetime.datetime.strptime(date_str, "%Y-%m-%d")
-    start_dt = date_dt - datetime.timedelta(days=1)
-    start_dt = start_dt.replace(hour=12, minute=0, second=0, microsecond=0)
+    local_tz = datetime.datetime.now().astimezone().tzinfo
+    date_dt = datetime.datetime.strptime(date_str, "%Y-%m-%d").replace(tzinfo=local_tz)
+    
+    start_dt = (date_dt - datetime.timedelta(days=1)).replace(hour=12, minute=0, second=0, microsecond=0)
     end_dt = date_dt.replace(hour=12, minute=0, second=0, microsecond=0)
     
-    start_iso = start_dt.isoformat() + "Z"
-    end_iso = end_dt.isoformat() + "Z"
+    start_iso = start_dt.astimezone(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    end_iso = end_dt.astimezone(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     
     sleep_filter = f'sleep.interval.end_time >= "{start_iso}" AND sleep.interval.end_time < "{end_iso}"'
     sleep_url = f"https://health.googleapis.com/v4/users/me/dataTypes/sleep/dataPoints?filter={urllib.parse.quote(sleep_filter)}"
@@ -99,11 +111,15 @@ def get_google_health_data(token, date_str):
         "alcohol": None
     }
     
+    print(f"Querying Google Health API from {start_iso} to {end_iso}...")
+    
     # 1. Fetch Sleep
     res = requests.get(sleep_url, headers=headers, timeout=10)
+    print(f"Sleep API Response Status: {res.status_code}")
     if res.status_code == 200:
         data = res.json()
         points = data.get("dataPoints", [])
+        print(f"Sleep API returned {len(points)} data points.")
         if points:
             # Sort points by end_time descending
             points.sort(key=lambda p: p.get("sleep", {}).get("interval", {}).get("endTime", ""), reverse=True)
@@ -359,7 +375,10 @@ class CheckInApp(tk.Tk):
         super().__init__()
         self.file_path = file_path
         self.date_str = date_str
-        self.api_type = os.environ.get("DATA_SOURCE_API", "google-health").lower()
+        default_api = "google-health"
+        if os.path.exists(FITBIT_TOKEN_PATH) or os.environ.get("FITBIT_CLIENT_ID"):
+            default_api = "fitbit"
+        self.api_type = os.environ.get("DATA_SOURCE_API", default_api).lower()
         
         self.title("Daily Check-In")
         self.geometry("380x520")

@@ -20,8 +20,53 @@ const DEFAULT_SETTINGS = {
 
 
 class OmniLoggerPlugin extends obsidian.Plugin {
+    async ensureVenv() {
+        const fs = require('fs');
+        const path = require('path');
+        const os = require('os');
+        const vaultPath = this.app.vault.adapter.getBasePath();
+        const pluginDir = path.join(vaultPath, '.obsidian', 'plugins', 'omni-logger');
+        const venvDir = path.join(pluginDir, '.venv');
+        
+        if (fs.existsSync(venvDir)) {
+            return;
+        }
+        
+        new obsidian.Notice("Omni-Logger: Setting up Python virtual environment (this may take a minute)...");
+        
+        const { exec } = require('child_process');
+        const checkPython = (cmd, cb) => {
+            exec(`${cmd} --version`, (err) => cb(!err));
+        };
+        
+        checkPython('python', (hasPython) => {
+            const pyCmd = hasPython ? 'python' : 'python3';
+            exec(`${pyCmd} -m venv .venv`, { cwd: pluginDir }, (err) => {
+                if (err) {
+                    console.error("Failed to create venv:", err);
+                    new obsidian.Notice("Failed to create Python virtual environment. Please install python.");
+                    return;
+                }
+                const isWin = os.platform() === 'win32';
+                const pipCmd = isWin
+                    ? `"${path.join(venvDir, 'Scripts', 'pip.exe')}" install requests pillow`
+                    : `"${path.join(venvDir, 'bin', 'pip')}" install requests pillow`;
+                    
+                exec(pipCmd, (pipErr) => {
+                    if (pipErr) {
+                        console.error("Failed to install dependencies:", pipErr);
+                        new obsidian.Notice("Failed to install python dependencies.");
+                    } else {
+                        new obsidian.Notice("Omni-Logger: Python environment ready!");
+                    }
+                });
+            });
+        });
+    }
+
     async onload() {
         await this.loadSettings();
+        this.ensureVenv();
         await this.loadCustomTemplatesFromVault();
 
         // Register Command to Open Modal
@@ -1489,7 +1534,15 @@ Return your response strictly as a JSON object matching this schema:
             GEMINI_API_KEY: geminiKey
         });
         
-        const cmd = `python -u "${scriptPath}" "${absoluteDailyPath}"`;
+        const os = require('os');
+        const fs = require('fs');
+        const pluginDir = `${vaultPath}${sep}.obsidian${sep}plugins${sep}omni-logger`;
+        const venvPython = os.platform() === 'win32'
+            ? path.join(pluginDir, '.venv', 'Scripts', 'python.exe')
+            : path.join(pluginDir, '.venv', 'bin', 'python');
+        const pythonCmd = fs.existsSync(venvPython) ? `"${venvPython}"` : 'python';
+        
+        const cmd = `${pythonCmd} -u "${scriptPath}" "${absoluteDailyPath}"`;
         console.log(`Running Python script: ${cmd}`);
         
         child_process.exec(cmd, { env: env }, (err, stdout, stderr) => {
