@@ -7,3 +7,5 @@ __pycache__/
 *.log
 
 data.json
+.venv/
+venv/
