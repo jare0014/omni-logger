@@ -534,7 +534,7 @@ class OmniLoggerPlugin extends obsidian.Plugin {
                     
                     const absoluteDailyPath = path.join(vaultPath, dailyFile.path);
                     console.log(`[Omni-Logger] Automatic background BLE sync triggered for template "${t.name}" (MAC: ${t.macAddress})`);
-                    this.runPythonScript('log_ble.py', `--template-dir "${absoluteTemplatePath}" --file "${absoluteDailyPath}"`);
+                    this.runPythonScript('log_ble.py', `--template-dir "${absoluteTemplatePath}" --file "${absoluteDailyPath}"`, true);
                 }
             }
         }
@@ -1852,7 +1852,7 @@ Return your response strictly as a JSON object matching this schema:
         log("Sidebar organize end");
     }
 
-    async runPythonScript(scriptName, scriptArgs = "") {
+    async runPythonScript(scriptName, scriptArgs = "", isBackground = false) {
         const child_process = require('child_process');
         const path = require('path');
         
@@ -1862,7 +1862,9 @@ Return your response strictly as a JSON object matching this schema:
         
         const dailyFile = this.getDailyNoteFile();
         if (!dailyFile) {
-            new obsidian.Notice("Daily note not found!");
+            if (!isBackground) {
+                new obsidian.Notice("Daily note not found!");
+            }
             return;
         }
         const absoluteDailyPath = path.join(vaultPath, dailyFile.path);
@@ -1890,10 +1892,12 @@ Return your response strictly as a JSON object matching this schema:
         child_process.exec(cmd, { env: env }, (err, stdout, stderr) => {
             if (err) {
                 console.error(`Script error: ${stderr || err.message}`);
-                new obsidian.Notice(`Error running ${scriptName}: ${stderr || err.message}`);
+                if (!isBackground) {
+                    new obsidian.Notice(`Error running ${scriptName}: ${stderr || err.message}`);
+                }
             } else {
                 console.log(`Script output: ${stdout}`);
-                if (stdout.trim()) {
+                if (stdout.trim() && !isBackground) {
                     new obsidian.Notice(stdout.trim());
                 }
             }
