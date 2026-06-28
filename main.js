@@ -85,6 +85,7 @@ class OmniLoggerPlugin extends obsidian.Plugin {
 
     async onload() {
         await this.loadSettings();
+        await this.loadLocalSettings();
         this.ensureVenv();
         await this.loadCustomTemplatesFromVault();
         this.registerCustomTemplateCommands();
@@ -514,6 +515,9 @@ class OmniLoggerPlugin extends obsidian.Plugin {
     }
 
     async runBackgroundBLESyncs() {
+        if (this.localSettings && this.localSettings.enableBLESync === false) {
+            return;
+        }
         const path = require('path');
         const vaultPath = this.app.vault.adapter.getBasePath();
         const folderName = this.settings.ingredientsFolder || 'Omni_Templates';
@@ -849,6 +853,39 @@ class OmniLoggerPlugin extends obsidian.Plugin {
 
     async saveSettings() {
         await this.saveData(this.settings);
+    }
+
+    async loadLocalSettings() {
+        const fs = require('fs');
+        const path = require('path');
+        const pluginDir = path.join(this.app.vault.adapter.getBasePath(), '.obsidian', 'plugins', 'omni-logger');
+        const localSettingsPath = path.join(pluginDir, 'local-settings.json');
+        
+        this.localSettings = {
+            enableBLESync: true
+        };
+        
+        if (fs.existsSync(localSettingsPath)) {
+            try {
+                const data = JSON.parse(fs.readFileSync(localSettingsPath, 'utf8'));
+                this.localSettings = Object.assign(this.localSettings, data);
+            } catch (e) {
+                console.error("[Omni-Logger] Failed to load local-settings.json:", e);
+            }
+        }
+    }
+
+    async saveLocalSettings() {
+        const fs = require('fs');
+        const path = require('path');
+        const pluginDir = path.join(this.app.vault.adapter.getBasePath(), '.obsidian', 'plugins', 'omni-logger');
+        const localSettingsPath = path.join(pluginDir, 'local-settings.json');
+        
+        try {
+            fs.writeFileSync(localSettingsPath, JSON.stringify(this.localSettings, null, 2), 'utf8');
+        } catch (e) {
+            console.error("[Omni-Logger] Failed to save local-settings.json:", e);
+        }
     }
 
     async getSecret(secretId, fallbackSettingKey) {
@@ -2693,6 +2730,16 @@ class OmniLoggerSettingTab extends obsidian.PluginSettingTab {
                 .onChange(async (value) => {
                     this.plugin.settings.ingredientsFolder = value;
                     await this.plugin.saveSettings();
+                }));
+
+        new obsidian.Setting(customLogsDetailsContainer)
+            .setName('Enable Background BLE Sync on this Machine')
+            .setDesc('Toggle whether background Bluetooth sync tasks run on this specific computer. (Saved locally in local-settings.json, does not sync over Obsidian Sync).')
+            .addToggle(toggle => toggle
+                .setValue(this.plugin.localSettings?.enableBLESync !== false)
+                .onChange(async (value) => {
+                    this.plugin.localSettings.enableBLESync = value;
+                    await this.plugin.saveLocalSettings();
                 }));
 
         new obsidian.Setting(customLogsDetailsContainer)
