@@ -161,7 +161,7 @@ class OmniLoggerPlugin extends obsidian.Plugin {
         this.addCommand({
             id: 'sync-fitbit',
             name: 'Sync Fitbit/Health Data',
-            callback: () => this.runPythonScript('google_health_pull.py')
+            callback: () => this.runPythonScript('health_checkin_wizard.py')
         });
 
         this.addCommand({
@@ -245,6 +245,27 @@ class OmniLoggerPlugin extends obsidian.Plugin {
                         
                         new obsidian.Notice(`Starting BLE sync for ${t.name}...`);
                         this.runPythonScript('log_ble.py', `--template-dir "${absoluteTemplatePath}" --file "${absoluteDailyPath}"`);
+                    } else if (t.mode === 'connection') {
+                        const cleanDirName = t.name.replace(/[^a-zA-Z0-9 _-]/g, '').trim();
+                        const dirFolderName = cleanDirName.toLowerCase().replace(/[^a-z0-9]/g, '-');
+                        const connectionFolder = path.join(vaultPath, '99_System', 'Omni_Connections', dirFolderName);
+                        
+                        const dailyFile = this.getDailyNoteFile();
+                        if (!dailyFile) {
+                            new obsidian.Notice("Daily note not found!");
+                            return;
+                        }
+                        const absoluteDailyPath = path.join(vaultPath, dailyFile.path);
+                        
+                        new obsidian.Notice(`Executing API caller for ${t.name}...`);
+                        this.runPythonScript(path.join(connectionFolder, 'caller.py'), "", true).then(() => {
+                            new obsidian.Notice(`Mapping metrics for ${t.name}...`);
+                            return this.runPythonScript(path.join(connectionFolder, 'sync.py'), `"${absoluteDailyPath}"`, true);
+                        }).then(() => {
+                            new obsidian.Notice(`Sync complete for ${t.name}!`);
+                        }).catch(err => {
+                            new obsidian.Notice(`Connection sync failed for ${t.name}: ${err.message}`);
+                        });
                     } else {
                         const modal = new OmniLoggerModal(this.app, this);
                         modal.selectedType = t.id;
@@ -422,9 +443,7 @@ class OmniLoggerPlugin extends obsidian.Plugin {
         }
         fs.writeFileSync(path.join(dirPath, 'metadata.json'), JSON.stringify(metadata, null, 2), 'utf8');
         
-        if (template.mode === 'ble') {
-            await this.updateMetaBindButton(template);
-        }
+        await this.updateMetaBindButton(template);
         
         // Reload templates
         await this.loadCustomTemplatesFromVault();
@@ -471,18 +490,19 @@ class OmniLoggerPlugin extends obsidian.Plugin {
             const data = JSON.parse(fs.readFileSync(metaBindPath, 'utf8'));
             if (!data.buttonTemplates) data.buttonTemplates = [];
             
-            const btnId = `${t.id}-btn`;
-            let existing = data.buttonTemplates.find(b => b.id === btnId);
-            
+            const label = t.mode === 'ble' ? `Sync ${t.name}` : `Log ${t.name}`;
+            const icon = t.mode === 'ble' ? 'battery-charging' : 'clipboard-list';
+            const tooltip = t.mode === 'ble' ? `Sync BLE metrics for ${t.name}` : `Open logger for ${t.name}`;
+
             if (!existing) {
                 existing = {
-                    label: `Sync ${t.name}`,
-                    icon: "battery-charging",
+                    label: label,
+                    icon: icon,
                     style: "primary",
                     class: "",
                     cssStyle: "",
                     backgroundImage: "",
-                    tooltip: `Sync BLE metrics for ${t.name}`,
+                    tooltip: tooltip,
                     id: btnId,
                     hidden: false,
                     actions: [
@@ -494,8 +514,9 @@ class OmniLoggerPlugin extends obsidian.Plugin {
                 };
                 data.buttonTemplates.push(existing);
             } else {
-                existing.label = `Sync ${t.name}`;
-                existing.tooltip = `Sync BLE metrics for ${t.name}`;
+                existing.label = label;
+                existing.icon = icon;
+                existing.tooltip = tooltip;
                 existing.actions = [
                     {
                         type: "command",
@@ -1947,55 +1968,71 @@ Return your response strictly as a JSON object matching this schema:
         log("Sidebar organize end");
     }
 
-    async runPythonScript(scriptName, scriptArgs = "", isBackground = false) {
-        const child_process = require('child_process');
-        const path = require('path');
-        
-        const vaultPath = this.app.vault.adapter.getBasePath();
-        const sep = vaultPath.includes('/') ? '/' : '\\';
-        const scriptPath = `${vaultPath}${sep}.obsidian${sep}plugins${sep}omni-logger${sep}${scriptName}`;
-        
-        const dailyFile = this.getDailyNoteFile();
-        if (!dailyFile) {
-            if (!isBackground) {
-                new obsidian.Notice("Daily note not found!");
-            }
-            return;
-        }
-        const absoluteDailyPath = path.join(vaultPath, dailyFile.path);
-        
-        let geminiKey = await this.getSecret(this.settings.geminiApiKeyId || 'omni-logger-gemini-api-key', 'geminiApiKey');
-        if (!geminiKey) {
-            geminiKey = await this.getSecret('timeblocker-gemini-api-key', 'geminiApiKey');
-        }
-        const env = Object.assign({}, process.env, {
-            GEMINI_API_KEY: geminiKey
-        });
-        
-        const os = require('os');
-        const fs = require('fs');
-        const pluginDir = `${vaultPath}${sep}.obsidian${sep}plugins${sep}omni-logger`;
-        const venvPython = os.platform() === 'win32'
-            ? path.join(pluginDir, '.venv', 'Scripts', 'python.exe')
-            : path.join(pluginDir, '.venv', 'bin', 'python');
-        const pythonCmd = fs.existsSync(venvPython) ? `"${venvPython}"` : 'python';
-        
-        const argsStr = scriptArgs ? " " + scriptArgs : ` "${absoluteDailyPath}"`;
-        const cmd = `${pythonCmd} -u "${scriptPath}"${argsStr}`;
-        console.log(`Running Python script: ${cmd}`);
-        
-        child_process.exec(cmd, { env: env }, (err, stdout, stderr) => {
-            if (err) {
-                console.error(`Script error: ${stderr || err.message}`);
-                if (!isBackground) {
-                    new obsidian.Notice(`Error running ${scriptName}: ${stderr || err.message}`);
+    runPythonScript(scriptName, scriptArgs = "", isBackground = false) {
+        return new Promise((resolve, reject) => {
+            const child_process = require('child_process');
+            const path = require('path');
+            
+            const vaultPath = this.app.vault.adapter.getBasePath();
+            const sep = vaultPath.includes('/') ? '/' : '\\';
+            
+            let scriptPath;
+            if (scriptName.startsWith('/') || scriptName.startsWith('\\') || scriptName.includes(':') || scriptName.startsWith('99_System')) {
+                if (scriptName.startsWith('99_System')) {
+                    scriptPath = path.join(vaultPath, scriptName);
+                } else {
+                    scriptPath = scriptName;
                 }
             } else {
-                console.log(`Script output: ${stdout}`);
-                if (stdout.trim() && !isBackground) {
-                    new obsidian.Notice(stdout.trim());
-                }
+                scriptPath = `${vaultPath}${sep}.obsidian${sep}plugins${sep}omni-logger${sep}${scriptName}`;
             }
+            
+            const dailyFile = this.getDailyNoteFile();
+            if (!dailyFile) {
+                if (!isBackground) {
+                    new obsidian.Notice("Daily note not found!");
+                }
+                resolve();
+                return;
+            }
+            const absoluteDailyPath = path.join(vaultPath, dailyFile.path);
+            
+            this.getSecret(this.settings.geminiApiKeyId || 'omni-logger-gemini-api-key', 'geminiApiKey').then(async (geminiKey) => {
+                if (!geminiKey) {
+                    geminiKey = await this.getSecret('timeblocker-gemini-api-key', 'geminiApiKey');
+                }
+                const env = Object.assign({}, process.env, {
+                    GEMINI_API_KEY: geminiKey
+                });
+                
+                const os = require('os');
+                const fs = require('fs');
+                const pluginDir = `${vaultPath}${sep}.obsidian${sep}plugins${sep}omni-logger`;
+                const venvPython = os.platform() === 'win32'
+                    ? path.join(pluginDir, '.venv', 'Scripts', 'python.exe')
+                    : path.join(pluginDir, '.venv', 'bin', 'python');
+                const pythonCmd = fs.existsSync(venvPython) ? `"${venvPython}"` : 'python';
+                
+                const argsStr = scriptArgs ? " " + scriptArgs : ` "${absoluteDailyPath}"`;
+                const cmd = `${pythonCmd} -u "${scriptPath}"${argsStr}`;
+                console.log(`Running Python script: ${cmd}`);
+                
+                child_process.exec(cmd, { env: env }, (err, stdout, stderr) => {
+                    if (err) {
+                        console.error(`Script error: ${stderr || err.message}`);
+                        if (!isBackground) {
+                            new obsidian.Notice(`Error running ${scriptName}: ${stderr || err.message}`);
+                        }
+                        reject(err);
+                    } else {
+                        console.log(`Script output: ${stdout}`);
+                        if (stdout.trim() && !isBackground) {
+                            new obsidian.Notice(stdout.trim());
+                        }
+                        resolve(stdout);
+                    }
+                });
+            });
         });
     }
 
@@ -2157,8 +2194,10 @@ class OmniLoggerSettingTab extends obsidian.PluginSettingTab {
             localLinksDiv.style.fontSize = '0.9em';
             localLinksDiv.innerHTML = `
                 <b>📁 Local Integration Resources:</b><br>
-                • <b>Food Registry JSON:</b> <a href="file:///c:/Users/jare0/Documents/antigravity/omni-logger/health_go_to_items.json">health_go_to_items.json</a> (Edit go-to items & nutritional metadata)<br>
-                • <b>Log & Sync Script:</b> <a href="file:///c:/Users/jare0/Documents/antigravity/omni-logger/google_health_pull.py">google_health_pull.py</a> (Configured to map caffeine/alcohol to your chosen destination formatting: YAML, inline key::value, or Bottom Append)
+                • <b>Food Registry JSON:</b> <a href="file:///c:/Users/jare0/Documents/Obsidian/99_System/Omni_Templates/health_go_to_items.json">health_go_to_items.json</a> (Edit go-to items & nutritional metadata inside your vault)<br>
+                • <b>Log & Sync Script:</b> <a href="file:///c:/Users/jare0/Documents/Obsidian/.obsidian/plugins/omni-logger/health_checkin_wizard.py">health_checkin_wizard.py</a> (GUI check-in wizard)<br>
+                • <b>Sleep Logging Script:</b> <a href="file:///c:/Users/jare0/Documents/Obsidian/.obsidian/plugins/omni-logger/log_sleep.py">log_sleep.py</a> (Direct/scheduled sleep logger)<br>
+                • <b>Biometrics Logging Script:</b> <a href="file:///c:/Users/jare0/Documents/Obsidian/.obsidian/plugins/omni-logger/log_biometrics.py">log_biometrics.py</a> (Direct/scheduled biometrics logger)
             `;
 
             // Credentials JSON
@@ -2972,19 +3011,34 @@ class OmniLoggerSettingTab extends obsidian.PluginSettingTab {
                         updateConfigArea();
                         
                         const codeBlockRow = syncStyleContainer.createDiv();
-                        codeBlockRow.style.marginTop = '6px';
+                        codeBlockRow.style.marginTop = '8px';
                         codeBlockRow.style.display = 'flex';
                         codeBlockRow.style.justifyContent = 'space-between';
                         codeBlockRow.style.alignItems = 'center';
-                        codeBlockRow.createSpan({ text: "Meta Bind Button Code:" }).style.fontSize = '0.9em';
+                        codeBlockRow.style.gap = '10px';
+                        
+                        const labelSpan = codeBlockRow.createSpan({ text: "Meta Bind Button:" });
+                        labelSpan.style.fontSize = '0.9em';
+                        
+                        const btnAndCode = codeBlockRow.createDiv();
+                        btnAndCode.style.display = 'flex';
+                        btnAndCode.style.alignItems = 'center';
+                        btnAndCode.style.gap = '8px';
                         
                         const codeVal = `\`BUTTON[${t.id}-btn]\``;
-                        const codeEl = codeBlockRow.createEl('code', { text: codeVal });
+                        const codeEl = btnAndCode.createEl('code', { text: codeVal });
                         codeEl.style.cursor = 'pointer';
                         codeEl.title = 'Click to copy to clipboard';
                         codeEl.onclick = () => {
                             navigator.clipboard.writeText(codeVal);
                             new obsidian.Notice("Copied Meta Bind code to clipboard!");
+                        };
+                        
+                        const registerBtn = btnAndCode.createEl('button', { text: 'Register/Sync Button', cls: 'mod-normal' });
+                        registerBtn.style.padding = '2px 8px';
+                        registerBtn.style.fontSize = '0.85em';
+                        registerBtn.onclick = async () => {
+                            await this.plugin.updateMetaBindButton(t);
                         };
                     } else {
                         const promptArea = itemDiv.createEl('textarea');
@@ -2993,6 +3047,37 @@ class OmniLoggerSettingTab extends obsidian.PluginSettingTab {
                         promptArea.style.height = '80px';
                         promptArea.value = t.prompt || '';
                         t._promptArea = promptArea;
+
+                        const codeBlockRow = itemDiv.createDiv();
+                        codeBlockRow.style.marginTop = '8px';
+                        codeBlockRow.style.display = 'flex';
+                        codeBlockRow.style.justifyContent = 'space-between';
+                        codeBlockRow.style.alignItems = 'center';
+                        codeBlockRow.style.gap = '10px';
+                        
+                        const labelSpan = codeBlockRow.createSpan({ text: "Meta Bind Button:" });
+                        labelSpan.style.fontSize = '0.9em';
+                        
+                        const btnAndCode = codeBlockRow.createDiv();
+                        btnAndCode.style.display = 'flex';
+                        btnAndCode.style.alignItems = 'center';
+                        btnAndCode.style.gap = '8px';
+                        
+                        const codeVal = `\`BUTTON[${t.id}-btn]\``;
+                        const codeEl = btnAndCode.createEl('code', { text: codeVal });
+                        codeEl.style.cursor = 'pointer';
+                        codeEl.title = 'Click to copy to clipboard';
+                        codeEl.onclick = () => {
+                            navigator.clipboard.writeText(codeVal);
+                            new obsidian.Notice("Copied Meta Bind code to clipboard!");
+                        };
+                        
+                        const registerBtn = btnAndCode.createEl('button', { text: 'Register/Sync Button', cls: 'mod-normal' });
+                        registerBtn.style.padding = '2px 8px';
+                        registerBtn.style.fontSize = '0.85em';
+                        registerBtn.onclick = async () => {
+                            await this.plugin.updateMetaBindButton(t);
+                        };
                     }
                     
                     editBtn.onclick = async () => {
@@ -3039,6 +3124,7 @@ class OmniLoggerSettingTab extends obsidian.PluginSettingTab {
                                     m.prompt = t.prompt;
                                     m.destination = t.destination;
                                     fs.writeFileSync(metadataPath, JSON.stringify(m, null, 2), 'utf8');
+                                    await this.plugin.updateMetaBindButton(t);
                                     new obsidian.Notice(`Saved template "${t.name}"!`);
                                 } catch(e) {
                                     new obsidian.Notice(`Failed to save template file: ${e.message}`);
