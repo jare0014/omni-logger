@@ -1687,7 +1687,7 @@ Return your response strictly as a JSON object matching this schema:
         log("Sidebar organize end");
     }
 
-    async runPythonScript(scriptName) {
+    async runPythonScript(scriptName, scriptArgs = "") {
         const child_process = require('child_process');
         const path = require('path');
         
@@ -1718,7 +1718,8 @@ Return your response strictly as a JSON object matching this schema:
             : path.join(pluginDir, '.venv', 'bin', 'python');
         const pythonCmd = fs.existsSync(venvPython) ? `"${venvPython}"` : 'python';
         
-        const cmd = `${pythonCmd} -u "${scriptPath}" "${absoluteDailyPath}"`;
+        const argsStr = scriptArgs ? " " + scriptArgs : ` "${absoluteDailyPath}"`;
+        const cmd = `${pythonCmd} -u "${scriptPath}"${argsStr}`;
         console.log(`Running Python script: ${cmd}`);
         
         child_process.exec(cmd, { env: env }, (err, stdout, stderr) => {
@@ -3164,9 +3165,9 @@ class OmniFoodLoggerModal extends obsidian.Modal {
                     
                     // Trigger log_nutrition.py script via plugin runPythonScript
                     const scriptPath = 'log_nutrition.py';
-                    const args = ` --file "${notePath}" --id ${this.selectedFoodId} --amount ${this.logAmount}`;
+                    const args = `--file "${notePath}" --id ${this.selectedFoodId} --amount ${this.logAmount}`;
                     
-                    await this.plugin.runPythonScript(scriptPath + args);
+                    await this.plugin.runPythonScript(scriptPath, args);
                     new obsidian.Notice("Successfully logged via HealthAPI.");
                     this.close();
                 } catch(e) {
