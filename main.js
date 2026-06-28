@@ -2197,7 +2197,9 @@ class OmniLoggerSettingTab extends obsidian.PluginSettingTab {
                 • <b>Food Registry JSON:</b> <a href="file:///c:/Users/jare0/Documents/Obsidian/99_System/Omni_Templates/health_go_to_items.json">health_go_to_items.json</a> (Edit go-to items & nutritional metadata inside your vault)<br>
                 • <b>Log & Sync Script:</b> <a href="file:///c:/Users/jare0/Documents/Obsidian/.obsidian/plugins/omni-logger/health_checkin_wizard.py">health_checkin_wizard.py</a> (GUI check-in wizard)<br>
                 • <b>Sleep Logging Script:</b> <a href="file:///c:/Users/jare0/Documents/Obsidian/.obsidian/plugins/omni-logger/log_sleep.py">log_sleep.py</a> (Direct/scheduled sleep logger)<br>
-                • <b>Biometrics Logging Script:</b> <a href="file:///c:/Users/jare0/Documents/Obsidian/.obsidian/plugins/omni-logger/log_biometrics.py">log_biometrics.py</a> (Direct/scheduled biometrics logger)
+                • <b>Biometrics Logging Script:</b> <a href="file:///c:/Users/jare0/Documents/Obsidian/.obsidian/plugins/omni-logger/log_biometrics.py">log_biometrics.py</a> (Direct/scheduled biometrics logger)<br>
+                • <b>Nutrition Syncing Script:</b> <a href="file:///c:/Users/jare0/Documents/Obsidian/.obsidian/plugins/omni-logger/log_nutrition.py">log_nutrition.py</a> (Direct/scheduled nutrition logger)<br>
+                • <b>Nutrition Posting Script:</b> <a href="file:///c:/Users/jare0/Documents/Obsidian/.obsidian/plugins/omni-logger/post_nutrition.py">post_nutrition.py</a> (Post foods/drinks directly to API)
             `;
 
             // Credentials JSON
@@ -3803,15 +3805,14 @@ class OmniFoodLoggerModal extends obsidian.Modal {
                         logBtn.setText('Log to Google Health');
                         return;
                     }
-                    const notePath = this.plugin.app.vault.adapter.getFullPath(dailyFile.path);
                     const path = require('path');
                     const vaultPath = this.plugin.app.vault.adapter.getBasePath();
                     const folderName = this.plugin.settings.ingredientsFolder || 'Omni_Templates';
                     const registryPath = path.join(vaultPath, folderName, 'health_go_to_items.json');
                     
-                    // Trigger log_nutrition.py script via plugin runPythonScript
-                    const scriptPath = 'log_nutrition.py';
-                    const args = `--file "${notePath}" --id ${this.selectedFoodId} --amount ${this.logAmount} --registry "${registryPath}"`;
+                    // Trigger post_nutrition.py script via plugin runPythonScript
+                    const scriptPath = 'post_nutrition.py';
+                    const args = `--id ${this.selectedFoodId} --amount ${this.logAmount} --registry "${registryPath}"`;
                     
                     await this.plugin.runPythonScript(scriptPath, args);
                     new obsidian.Notice("Successfully logged via HealthAPI.");
