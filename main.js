@@ -1746,36 +1746,72 @@ Return your response strictly as a JSON object matching this schema:
         const fs = require('fs');
         const vaultPath = this.app.vault.adapter.getBasePath();
         const sep = vaultPath.includes('/') ? '/' : '\\';
+        const folderName = this.settings.ingredientsFolder || 'Omni_Templates';
+        const vaultJsonPath = `${vaultPath}${sep}${folderName}${sep}health_go_to_items.json`;
         const pluginJsonPath = `${vaultPath}${sep}.obsidian${sep}plugins${sep}omni-logger${sep}health_go_to_items.json`;
+        
+        if (fs.existsSync(vaultJsonPath)) {
+            try {
+                const content = fs.readFileSync(vaultJsonPath, 'utf8');
+                const data = JSON.parse(content);
+                return data.go_to_items || [];
+            } catch(e) {
+                console.error("Failed to parse go-to items from vault:", e);
+            }
+        }
         
         if (fs.existsSync(pluginJsonPath)) {
             try {
                 const content = fs.readFileSync(pluginJsonPath, 'utf8');
                 const data = JSON.parse(content);
+                const vaultTemplatesDir = `${vaultPath}${sep}${folderName}`;
+                if (!fs.existsSync(vaultTemplatesDir)) {
+                    fs.mkdirSync(vaultTemplatesDir, { recursive: true });
+                }
+                fs.writeFileSync(vaultJsonPath, content, 'utf8');
+                try { fs.unlinkSync(pluginJsonPath); } catch(e) {}
                 return data.go_to_items || [];
             } catch(e) {
-                console.error("Failed to parse go-to items:", e);
+                console.error("Failed to migrate go-to items:", e);
             }
         }
-        return [];
+        
+        const defaultRegistry = {
+            go_to_items: [
+                { id: "americano", name: "Americano", category: "caffeine", default_amount: 1, unit: "cup (12 oz)", caffeine_mg: 150, health_connect_type: "nutrition", nutrients: { caffeine: 0.150 } },
+                { id: "espresso", name: "Espresso", category: "caffeine", default_amount: 1, unit: "shot", caffeine_mg: 75, health_connect_type: "nutrition", nutrients: { caffeine: 0.075 } },
+                { id: "coffee", name: "Coffee", category: "caffeine", default_amount: 1, unit: "cup (8 oz)", caffeine_mg: 95, health_connect_type: "nutrition", nutrients: { caffeine: 0.095 } },
+                { id: "cold_brew", name: "Cold Brew", category: "caffeine", default_amount: 1, unit: "glass (12 oz)", caffeine_mg: 150, health_connect_type: "nutrition", nutrients: { caffeine: 0.150 } },
+                { id: "protein_shake", name: "Protein Shake", category: "nutrition", default_amount: 1, unit: "serving", protein_g: 30, calories: 160, health_connect_type: "nutrition", nutrients: { protein: 30.0, energy: 160.0 } },
+                { id: "beer", name: "Beer (IPA / Stout / Ale)", category: "alcohol", default_amount: 1, unit: "can (12 oz)", alcohol_g: 14, health_connect_type: "alcohol_consumption", nutrients: { alcohol: 14.0 } },
+                { id: "wine", name: "Wine", category: "alcohol", default_amount: 1, unit: "glass (5 oz)", alcohol_g: 14, health_connect_type: "alcohol_consumption", nutrients: { alcohol: 14.0 } },
+                { id: "water", name: "Water (Cup)", category: "hydration", default_amount: 1, unit: "cup (8 oz / 250 ml)", water_ml: 250.0, health_connect_type: "hydration", nutrients: {} },
+                { id: "water_bottle", name: "Water (Bottle)", category: "hydration", default_amount: 1, unit: "bottle (16.9 oz / 500 ml)", water_ml: 500.0, health_connect_type: "hydration", nutrients: {} }
+            ]
+        };
+        try {
+            const vaultTemplatesDir = `${vaultPath}${sep}${folderName}`;
+            if (!fs.existsSync(vaultTemplatesDir)) {
+                fs.mkdirSync(vaultTemplatesDir, { recursive: true });
+            }
+            fs.writeFileSync(vaultJsonPath, JSON.stringify(defaultRegistry, null, 2), 'utf8');
+        } catch(e) {}
+        return defaultRegistry.go_to_items;
     }
 
     async saveGoToItems(items) {
         const fs = require('fs');
         const vaultPath = this.app.vault.adapter.getBasePath();
         const sep = vaultPath.includes('/') ? '/' : '\\';
-        const pluginJsonPath = `${vaultPath}${sep}.obsidian${sep}plugins${sep}omni-logger${sep}health_go_to_items.json`;
-        const devJsonPath = `${vaultPath}${sep}..${sep}antigravity${sep}omni-logger${sep}health_go_to_items.json`;
+        const folderName = this.settings.ingredientsFolder || 'Omni_Templates';
+        const vaultJsonPath = `${vaultPath}${sep}${folderName}${sep}health_go_to_items.json`;
         
         const payload = JSON.stringify({ go_to_items: items }, null, 2);
         
         try {
-            fs.writeFileSync(pluginJsonPath, payload, 'utf8');
-            if (fs.existsSync(`${vaultPath}${sep}..${sep}antigravity${sep}omni-logger`)) {
-                fs.writeFileSync(devJsonPath, payload, 'utf8');
-            }
+            fs.writeFileSync(vaultJsonPath, payload, 'utf8');
         } catch(e) {
-            console.error("Failed to save go-to items:", e);
+            console.error("Failed to save go-to items to vault:", e);
         }
     }
 
@@ -3682,10 +3718,14 @@ class OmniFoodLoggerModal extends obsidian.Modal {
                         return;
                     }
                     const notePath = this.plugin.app.vault.adapter.getFullPath(dailyFile.path);
+                    const path = require('path');
+                    const vaultPath = this.plugin.app.vault.adapter.getBasePath();
+                    const folderName = this.plugin.settings.ingredientsFolder || 'Omni_Templates';
+                    const registryPath = path.join(vaultPath, folderName, 'health_go_to_items.json');
                     
                     // Trigger log_nutrition.py script via plugin runPythonScript
                     const scriptPath = 'log_nutrition.py';
-                    const args = `--file "${notePath}" --id ${this.selectedFoodId} --amount ${this.logAmount}`;
+                    const args = `--file "${notePath}" --id ${this.selectedFoodId} --amount ${this.logAmount} --registry "${registryPath}"`;
                     
                     await this.plugin.runPythonScript(scriptPath, args);
                     new obsidian.Notice("Successfully logged via HealthAPI.");

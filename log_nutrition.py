@@ -17,9 +17,12 @@ from google_health_pull import (
     append_to_bottom_log
 )
 
-def log_food_to_health_and_note(file_path, food_id, amount):
+def log_food_to_health_and_note(file_path, food_id, amount, registry_path=None):
     # 1. Load go-to items
-    json_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "health_go_to_items.json")
+    json_path = registry_path
+    if not json_path:
+        json_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "health_go_to_items.json")
+        
     if not os.path.exists(json_path):
         print(f"Error: {json_path} not found.")
         sys.exit(1)
@@ -122,6 +125,7 @@ if __name__ == "__main__":
     parser.add_argument("--file", required=True, help="Obsidian Daily Note File Path")
     parser.add_argument("--id", required=True, help="Food Item ID")
     parser.add_argument("--amount", type=float, default=1.0, help="Amount/servings")
+    parser.add_argument("--registry", required=False, help="Path to registry JSON")
     args = parser.parse_args()
     
-    log_food_to_health_and_note(args.file, args.id, args.amount)
+    log_food_to_health_and_note(args.file, args.id, args.amount, args.registry)
