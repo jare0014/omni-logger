@@ -85,6 +85,7 @@ class OmniLoggerPlugin extends obsidian.Plugin {
 
     async onload() {
         await this.loadSettings();
+        await this.loadLocalSettings();
         this.ensureVenv();
         await this.loadCustomTemplatesFromVault();
         this.registerCustomTemplateCommands();
@@ -514,6 +515,9 @@ class OmniLoggerPlugin extends obsidian.Plugin {
     }
 
     async runBackgroundBLESyncs() {
+        if (this.localSettings && this.localSettings.enableBLESync === false) {
+            return;
+        }
         const path = require('path');
         const vaultPath = this.app.vault.adapter.getBasePath();
         const folderName = this.settings.ingredientsFolder || 'Omni_Templates';
@@ -534,7 +538,7 @@ class OmniLoggerPlugin extends obsidian.Plugin {
                     
                     const absoluteDailyPath = path.join(vaultPath, dailyFile.path);
                     console.log(`[Omni-Logger] Automatic background BLE sync triggered for template "${t.name}" (MAC: ${t.macAddress})`);
-                    this.runPythonScript('log_ble.py', `--template-dir "${absoluteTemplatePath}" --file "${absoluteDailyPath}"`);
+                    this.runPythonScript('log_ble.py', `--template-dir "${absoluteTemplatePath}" --file "${absoluteDailyPath}"`, true);
                 }
             }
         }
@@ -849,6 +853,39 @@ class OmniLoggerPlugin extends obsidian.Plugin {
 
     async saveSettings() {
         await this.saveData(this.settings);
+    }
+
+    async loadLocalSettings() {
+        const fs = require('fs');
+        const path = require('path');
+        const pluginDir = path.join(this.app.vault.adapter.getBasePath(), '.obsidian', 'plugins', 'omni-logger');
+        const localSettingsPath = path.join(pluginDir, 'local-settings.json');
+        
+        this.localSettings = {
+            enableBLESync: true
+        };
+        
+        if (fs.existsSync(localSettingsPath)) {
+            try {
+                const data = JSON.parse(fs.readFileSync(localSettingsPath, 'utf8'));
+                this.localSettings = Object.assign(this.localSettings, data);
+            } catch (e) {
+                console.error("[Omni-Logger] Failed to load local-settings.json:", e);
+            }
+        }
+    }
+
+    async saveLocalSettings() {
+        const fs = require('fs');
+        const path = require('path');
+        const pluginDir = path.join(this.app.vault.adapter.getBasePath(), '.obsidian', 'plugins', 'omni-logger');
+        const localSettingsPath = path.join(pluginDir, 'local-settings.json');
+        
+        try {
+            fs.writeFileSync(localSettingsPath, JSON.stringify(this.localSettings, null, 2), 'utf8');
+        } catch (e) {
+            console.error("[Omni-Logger] Failed to save local-settings.json:", e);
+        }
     }
 
     async getSecret(secretId, fallbackSettingKey) {
@@ -1852,7 +1889,7 @@ Return your response strictly as a JSON object matching this schema:
         log("Sidebar organize end");
     }
 
-    async runPythonScript(scriptName, scriptArgs = "") {
+    async runPythonScript(scriptName, scriptArgs = "", isBackground = false) {
         const child_process = require('child_process');
         const path = require('path');
         
@@ -1862,7 +1899,9 @@ Return your response strictly as a JSON object matching this schema:
         
         const dailyFile = this.getDailyNoteFile();
         if (!dailyFile) {
-            new obsidian.Notice("Daily note not found!");
+            if (!isBackground) {
+                new obsidian.Notice("Daily note not found!");
+            }
             return;
         }
         const absoluteDailyPath = path.join(vaultPath, dailyFile.path);
@@ -1890,10 +1929,12 @@ Return your response strictly as a JSON object matching this schema:
         child_process.exec(cmd, { env: env }, (err, stdout, stderr) => {
             if (err) {
                 console.error(`Script error: ${stderr || err.message}`);
-                new obsidian.Notice(`Error running ${scriptName}: ${stderr || err.message}`);
+                if (!isBackground) {
+                    new obsidian.Notice(`Error running ${scriptName}: ${stderr || err.message}`);
+                }
             } else {
                 console.log(`Script output: ${stdout}`);
-                if (stdout.trim()) {
+                if (stdout.trim() && !isBackground) {
                     new obsidian.Notice(stdout.trim());
                 }
             }
@@ -2689,6 +2730,16 @@ class OmniLoggerSettingTab extends obsidian.PluginSettingTab {
                 .onChange(async (value) => {
                     this.plugin.settings.ingredientsFolder = value;
                     await this.plugin.saveSettings();
+                }));
+
+        new obsidian.Setting(customLogsDetailsContainer)
+            .setName('Enable Background BLE Sync on this Machine')
+            .setDesc('Toggle whether background Bluetooth sync tasks run on this specific computer. (Saved locally in local-settings.json, does not sync over Obsidian Sync).')
+            .addToggle(toggle => toggle
+                .setValue(this.plugin.localSettings?.enableBLESync !== false)
+                .onChange(async (value) => {
+                    this.plugin.localSettings.enableBLESync = value;
+                    await this.plugin.saveLocalSettings();
                 }));
 
         new obsidian.Setting(customLogsDetailsContainer)
