@@ -571,7 +571,7 @@ class CheckInApp(tk.Tk):
         self.api_type = os.environ.get("DATA_SOURCE_API", default_api).lower()
         
         self.title("Daily Check-In")
-        self.geometry("380x555")
+        self.geometry("380x240")
         self.resizable(False, False)
         
         # Dark Theme Palette
@@ -668,48 +668,11 @@ class CheckInApp(tk.Tk):
         grid_frame = tk.Frame(self, bg=self.bg_color)
         grid_frame.pack(padx=20, fill="both", expand=True)
         
-        # Dynamically build fields list based on configuration
-        fields = []
-        
-        # Sleep
-        sleep_cfg = sync_config.get("sleep", {})
-        if sleep_cfg.get("enabled", True):
-            fields.append((sleep_cfg.get("key", "Sleep_hours"), "Sleep Hours (H:MM)", "Sleep_hours", "sleep"))
-            fields.append(("wake_up", "Wake Up Time (H:MM)", "wake_up", "sleep"))
-            
-        # HRV
-        hrv_cfg = sync_config.get("hrv", {})
-        if hrv_cfg.get("enabled", True):
-            fields.append((hrv_cfg.get("key", "HRV"), "Heart Rate Variability (ms)", "HRV", "hrv"))
-            
-        # Caffeine
-        caff_cfg = sync_config.get("caffeine", {})
-        if caff_cfg.get("enabled", True):
-            fields.append((caff_cfg.get("key", "caffeine"), "Caffeine Count", "caffeine", "caffeine"))
-            
-        # Alcohol
-        alc_cfg = sync_config.get("alcohol", {})
-        if alc_cfg.get("enabled", True):
-            fields.append((alc_cfg.get("key", "alcohol"), "Alcohol Count", "alcohol", "alcohol"))
-            
-        # Hydration
-        hyd_cfg = sync_config.get("hydration", {})
-        if hyd_cfg.get("enabled", True):
-            fields.append((hyd_cfg.get("key", "hydration"), "Hydration/Water (ml)", "hydration", "hydration"))
-            
-        # Protein
-        prot_cfg = sync_config.get("protein", {})
-        if prot_cfg.get("enabled", False):
-            fields.append((prot_cfg.get("key", "protein"), "Protein Intake (g)", "protein", "protein"))
-            
-        # Calories
-        cal_cfg = sync_config.get("calories", {})
-        if cal_cfg.get("enabled", False):
-            fields.append((cal_cfg.get("key", "calories"), "Calories Intake (kcal)", "calories", "calories"))
-            
-        # Static check-in scores
-        fields.append(("Sleep_score", "Sleep Score / Quality", None, "static"))
-        fields.append(("Readiness", "Readiness Score", None, "static"))
+        # Static check-in scores (the only editable manual entries)
+        fields = [
+            ("Sleep_score", "Sleep Score / Quality", None, "static"),
+            ("Readiness", "Readiness Score", None, "static")
+        ]
         
         self.entries = {}
         for idx, (key, label_text, fitbit_key, category) in enumerate(fields):
@@ -736,30 +699,9 @@ class CheckInApp(tk.Tk):
             )
             entry.grid(row=idx, column=1, sticky="ew", pady=5, padx=(10, 0))
             
-            # Retrieve initial value based on category destination
-            dest = "frontmatter"
-            if category == "sleep" and key != "wake_up":
-                dest = sync_config.get("sleep", {}).get("destination", "frontmatter")
-            elif category == "sleep" and key == "wake_up":
-                dest = sync_config.get("sleep", {}).get("destination", "frontmatter")
-            elif category in sync_config:
-                dest = sync_config.get(category, {}).get("destination", "frontmatter")
-                
-            start_val = ""
-            if dest == "frontmatter" or category == "static":
-                start_val = self.existing_fm.get(key, "")
-            elif dest == "dataview":
-                match = re.search(rf"^\s*{re.escape(key)}::\s*(.*?)\s*$", content, re.MULTILINE)
-                start_val = match.group(1) if match else ""
-            elif dest == "append-log":
-                match = re.search(rf"^\s*-\s*\[health_sync\]\s*{re.escape(key)}:\s*(.*?)\s*$", content, re.MULTILINE)
-                start_val = match.group(1) if match else ""
-                
+            start_val = self.existing_fm.get(key, "")
             if start_val == "-":
                 start_val = ""
-                
-            if not start_val and fitbit_key and self.fitbit_data.get(fitbit_key) is not None:
-                start_val = str(self.fitbit_data[fitbit_key])
                 
             entry.insert(0, start_val)
             self.entries[key] = entry
@@ -786,28 +728,47 @@ class CheckInApp(tk.Tk):
         dataview_updates = {}
         append_updates = {}
         
-        for key, entry in self.entries.items():
-            val = entry.get().strip()
-            val_str = val if val else "-"
-            
-            dest = "frontmatter"
-            # Default sleep / static variables mapping
-            if key == "wake_up":
-                dest = sync_config.get("sleep", {}).get("destination", "frontmatter")
-            elif key in ["Sleep_score", "Readiness"]:
-                dest = "frontmatter"
-            else:
-                for mKey, mConfig in sync_config.items():
-                    if mConfig.get("key") == key:
-                        dest = mConfig.get("destination", "frontmatter")
-                        break
-            
-            if dest == "frontmatter":
+        # 1. Collect manual input updates
+        for key in ["Sleep_score", "Readiness"]:
+            entry = self.entries.get(key)
+            if entry:
+                val = entry.get().strip()
+                val_str = val if val else "-"
                 yaml_updates[key] = val_str
-            elif dest == "dataview":
-                dataview_updates[key] = val_str
-            elif dest == "append-log":
-                append_updates[key] = val_str
+                
+        # 2. Collect API-fetched updates automatically
+        api_mappings = [
+            # (config_category, fitbit_key, default_note_key)
+            ("sleep", "Sleep_hours", "Sleep_hours"),
+            ("sleep", "wake_up", "wake_up"),
+            ("hrv", "HRV", "HRV"),
+            ("caffeine", "caffeine", "caffeine"),
+            ("alcohol", "alcohol", "alcohol"),
+            ("hydration", "hydration", "hydration"),
+            ("protein", "protein", "protein"),
+            ("calories", "calories", "calories")
+        ]
+        
+        for category, fitbit_key, default_note_key in api_mappings:
+            cfg = sync_config.get(category, {})
+            # Check if this metric is enabled in settings
+            if category == "sleep" or cfg.get("enabled", True if category in ["hrv", "caffeine", "alcohol", "hydration"] else False):
+                # Use custom key from settings, fallback to default_note_key
+                note_key = cfg.get("key", default_note_key) if category != "sleep" or fitbit_key == "Sleep_hours" else default_note_key
+                if fitbit_key == "wake_up" and category == "sleep":
+                    note_key = "wake_up"
+                
+                # Fetch value from self.fitbit_data
+                val = self.fitbit_data.get(fitbit_key)
+                if val is not None:
+                    dest = cfg.get("destination", "frontmatter")
+                    val_str = str(val)
+                    if dest == "frontmatter":
+                        yaml_updates[note_key] = val_str
+                    elif dest == "dataview":
+                        dataview_updates[note_key] = val_str
+                    elif dest == "append-log":
+                        append_updates[note_key] = val_str
                 
         try:
             updated_content = self.note_content
