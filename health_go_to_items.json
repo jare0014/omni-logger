@@ -85,6 +85,26 @@
       "nutrients": {
         "alcohol": 14.0
       }
+    },
+    {
+      "id": "water",
+      "name": "Water (Cup)",
+      "category": "hydration",
+      "default_amount": 1,
+      "unit": "cup (8 oz / 250 ml)",
+      "water_ml": 250.0,
+      "health_connect_type": "hydration",
+      "nutrients": {}
+    },
+    {
+      "id": "water_bottle",
+      "name": "Water (Bottle)",
+      "category": "hydration",
+      "default_amount": 1,
+      "unit": "bottle (16.9 oz / 500 ml)",
+      "water_ml": 500.0,
+      "health_connect_type": "hydration",
+      "nutrients": {}
     }
   ]
 }

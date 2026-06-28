@@ -38,6 +38,7 @@ def log_food_to_health_and_note(file_path, food_id, amount):
     health_type = food["health_connect_type"]
     nutrients = food.get("nutrients", {})
     alcohol_g = food.get("alcohol_g", 14.0)
+    water_ml = food.get("water_ml", 250.0)
     
     print(f"Logging {amount} serving(s) of '{food_name}'...")
     
@@ -94,6 +95,16 @@ def log_food_to_health_and_note(file_path, food_id, amount):
                 }
             }
             url = "https://health.googleapis.com/v4/users/me/dataTypes/alcohol-consumption/dataPoints"
+        elif health_type == "hydration":
+            payload = {
+                "hydrationLog": {
+                    "interval": interval,
+                    "amountConsumed": {
+                        "milliliters": float(amount * water_ml)
+                    }
+                }
+            }
+            url = "https://health.googleapis.com/v4/users/me/dataTypes/hydration-log/dataPoints"
         else:
             print(f"Unsupported health connect type: {health_type}")
             return
