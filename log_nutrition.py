@@ -8,7 +8,7 @@ import re
 
 # Add omni-logger path to sys.path
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
-from google_health_pull import (
+from health_utils import (
     get_google_access_token,
     parse_frontmatter,
     update_frontmatter,
