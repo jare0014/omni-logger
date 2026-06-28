@@ -127,13 +127,35 @@ class OmniLoggerPlugin extends obsidian.Plugin {
         this.addCommand({
             id: 'log-calls',
             name: 'Log Work Calls Screenshot',
-            callback: () => this.runPythonScript('log_calls.py')
+            callback: () => {
+                const path = require('path');
+                const vaultPath = this.app.vault.adapter.getBasePath();
+                const dailyFile = this.getDailyNoteFile();
+                if (!dailyFile) {
+                    new obsidian.Notice("Daily note not found!");
+                    return;
+                }
+                const absoluteDailyPath = path.join(vaultPath, dailyFile.path);
+                const callsTemplateDir = path.join(vaultPath, this.settings.ingredientsFolder || 'Omni_Templates', 'Work Calls');
+                this.runPythonScript('log_ocr.py', `--template-dir "${callsTemplateDir}" --file "${absoluteDailyPath}"`);
+            }
         });
 
         this.addCommand({
             id: 'log-lumosity',
             name: 'Log Lumosity Scores Screenshot',
-            callback: () => this.runPythonScript('log_lumosity.py')
+            callback: () => {
+                const path = require('path');
+                const vaultPath = this.app.vault.adapter.getBasePath();
+                const dailyFile = this.getDailyNoteFile();
+                if (!dailyFile) {
+                    new obsidian.Notice("Daily note not found!");
+                    return;
+                }
+                const absoluteDailyPath = path.join(vaultPath, dailyFile.path);
+                const lumosityTemplateDir = path.join(vaultPath, this.settings.ingredientsFolder || 'Omni_Templates', 'Lumosity');
+                this.runPythonScript('log_ocr.py', `--template-dir "${lumosityTemplateDir}" --file "${absoluteDailyPath}"`);
+            }
         });
 
         this.addCommand({
