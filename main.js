@@ -85,8 +85,10 @@ class OmniLoggerPlugin extends obsidian.Plugin {
 
     async onload() {
         await this.loadSettings();
+        await this.loadLocalSettings();
         this.ensureVenv();
         await this.loadCustomTemplatesFromVault();
+        this.registerCustomTemplateCommands();
 
         // Register Command to Open Modal
         this.addCommand({
@@ -125,19 +127,41 @@ class OmniLoggerPlugin extends obsidian.Plugin {
         this.addCommand({
             id: 'log-calls',
             name: 'Log Work Calls Screenshot',
-            callback: () => this.runPythonScript('log_calls.py')
+            callback: () => {
+                const path = require('path');
+                const vaultPath = this.app.vault.adapter.getBasePath();
+                const dailyFile = this.getDailyNoteFile();
+                if (!dailyFile) {
+                    new obsidian.Notice("Daily note not found!");
+                    return;
+                }
+                const absoluteDailyPath = path.join(vaultPath, dailyFile.path);
+                const callsTemplateDir = path.join(vaultPath, this.settings.ingredientsFolder || 'Omni_Templates', 'Work Calls');
+                this.runPythonScript('log_ocr.py', `--template-dir "${callsTemplateDir}" --file "${absoluteDailyPath}"`);
+            }
         });
 
         this.addCommand({
             id: 'log-lumosity',
             name: 'Log Lumosity Scores Screenshot',
-            callback: () => this.runPythonScript('log_lumosity.py')
+            callback: () => {
+                const path = require('path');
+                const vaultPath = this.app.vault.adapter.getBasePath();
+                const dailyFile = this.getDailyNoteFile();
+                if (!dailyFile) {
+                    new obsidian.Notice("Daily note not found!");
+                    return;
+                }
+                const absoluteDailyPath = path.join(vaultPath, dailyFile.path);
+                const lumosityTemplateDir = path.join(vaultPath, this.settings.ingredientsFolder || 'Omni_Templates', 'Lumosity');
+                this.runPythonScript('log_ocr.py', `--template-dir "${lumosityTemplateDir}" --file "${absoluteDailyPath}"`);
+            }
         });
 
         this.addCommand({
             id: 'sync-fitbit',
             name: 'Sync Fitbit/Health Data',
-            callback: () => this.runPythonScript('google_health_pull.py')
+            callback: () => this.runPythonScript('health_checkin_wizard.py')
         });
 
         this.addCommand({
@@ -155,6 +179,9 @@ class OmniLoggerPlugin extends obsidian.Plugin {
         // Start background checks for APIs
         setTimeout(() => this.checkAllConnections(), 2000);
         this.connectionCheckInterval = setInterval(() => this.checkAllConnections(), 15 * 60 * 1000);
+
+        this.lastSyncTimes = {};
+        this.bleSyncInterval = setInterval(() => this.runBackgroundBLESyncs(), 60 * 1000);
 
         // Register Settings Tab
         this.settingsTab = new OmniLoggerSettingTab(this.app, this);
@@ -195,9 +222,67 @@ class OmniLoggerPlugin extends obsidian.Plugin {
         }
     }
 
+    registerCustomTemplateCommands() {
+        const path = require('path');
+        const vaultPath = this.app.vault.adapter.getBasePath();
+        const folderName = this.settings.ingredientsFolder || 'Omni_Templates';
+        
+        for (const t of this.settings.customTemplates) {
+            this.addCommand({
+                id: `run-template-${t.id}`,
+                name: `Sync BLE/Metrics: ${t.name}`,
+                callback: () => {
+                    if (t.mode === 'ble') {
+                        const cleanDirName = t.name.replace(/[^a-zA-Z0-9 _-]/g, '');
+                        const absoluteTemplatePath = path.join(vaultPath, folderName, cleanDirName);
+                        
+                        const dailyFile = this.getDailyNoteFile();
+                        if (!dailyFile) {
+                            new obsidian.Notice("Daily note not found!");
+                            return;
+                        }
+                        const absoluteDailyPath = path.join(vaultPath, dailyFile.path);
+                        
+                        new obsidian.Notice(`Starting BLE sync for ${t.name}...`);
+                        this.runPythonScript('log_ble.py', `--template-dir "${absoluteTemplatePath}" --file "${absoluteDailyPath}"`);
+                    } else if (t.mode === 'connection') {
+                        const cleanDirName = t.name.replace(/[^a-zA-Z0-9 _-]/g, '').trim();
+                        const dirFolderName = cleanDirName.toLowerCase().replace(/[^a-z0-9]/g, '-');
+                        const connectionFolder = path.join(vaultPath, '99_System', 'Omni_Connections', dirFolderName);
+                        
+                        const dailyFile = this.getDailyNoteFile();
+                        if (!dailyFile) {
+                            new obsidian.Notice("Daily note not found!");
+                            return;
+                        }
+                        const absoluteDailyPath = path.join(vaultPath, dailyFile.path);
+                        
+                        new obsidian.Notice(`Executing API caller for ${t.name}...`);
+                        this.runPythonScript(path.join(connectionFolder, 'caller.py'), "", true).then(() => {
+                            new obsidian.Notice(`Mapping metrics for ${t.name}...`);
+                            return this.runPythonScript(path.join(connectionFolder, 'sync.py'), `"${absoluteDailyPath}"`, true);
+                        }).then(() => {
+                            new obsidian.Notice(`Sync complete for ${t.name}!`);
+                        }).catch(err => {
+                            new obsidian.Notice(`Connection sync failed for ${t.name}: ${err.message}`);
+                        });
+                    } else {
+                        const modal = new OmniLoggerModal(this.app, this);
+                        modal.selectedType = t.id;
+                        modal.selectedMode = t.mode;
+                        modal.open();
+                    }
+                }
+            });
+        }
+    }
+
     onunload() {
         if (this.connectionCheckInterval) {
             clearInterval(this.connectionCheckInterval);
+        }
+        if (this.bleSyncInterval) {
+            clearInterval(this.bleSyncInterval);
         }
         if (this.statusBarEl) {
             this.statusBarEl.remove();
@@ -255,7 +340,7 @@ class OmniLoggerPlugin extends obsidian.Plugin {
                         prompt = metadata.prompt;
                     }
                     
-                    if (prompt) {
+                    if (prompt || metadata.mode === 'ble') {
                         let instructions = "";
                         if (fs.existsSync(instructionsPath)) {
                             instructions = fs.readFileSync(instructionsPath, 'utf8').trim();
@@ -288,7 +373,7 @@ class OmniLoggerPlugin extends obsidian.Plugin {
                             exampleInput = metadata.exampleInput;
                         }
                         
-                        templates.push({
+                        const tObj = Object.assign({
                             id: metadata.id || 'custom-' + templateName.toLowerCase().replace(/[^a-z0-9]/g, '-'),
                             name: templateName,
                             mode: mode,
@@ -297,7 +382,8 @@ class OmniLoggerPlugin extends obsidian.Plugin {
                             instructions: instructions,
                             exampleInput: exampleInput,
                             targetAppearance: targetAppearance
-                        });
+                        }, metadata);
+                        templates.push(tObj);
                     }
                 }
             }
@@ -345,7 +431,19 @@ class OmniLoggerPlugin extends obsidian.Plugin {
             destination: template.destination,
             mode: template.mode
         };
+        if (template.mode === 'ble') {
+            metadata.macAddress = template.macAddress;
+            metadata.useLoraxHandshake = template.useLoraxHandshake || false;
+            metadata.commandUuid = template.commandUuid;
+            metadata.responseUuid = template.responseUuid;
+            metadata.handshakeKeyBase64 = template.handshakeKeyBase64;
+            metadata.metrics = template.metrics;
+            metadata.syncStyle = template.syncStyle || "manual";
+            metadata.syncInterval = template.syncInterval || 15;
+        }
         fs.writeFileSync(path.join(dirPath, 'metadata.json'), JSON.stringify(metadata, null, 2), 'utf8');
+        
+        await this.updateMetaBindButton(template);
         
         // Reload templates
         await this.loadCustomTemplatesFromVault();
@@ -360,6 +458,11 @@ class OmniLoggerPlugin extends obsidian.Plugin {
         const cleanName = templateName.replace(/[^a-zA-Z0-9 _-]/g, '');
         const dirPath = path.join(vaultPath, folderName, cleanName);
         
+        const template = this.settings.customTemplates?.find(t => t.name === templateName);
+        if (template) {
+            await this.removeMetaBindButton(template.id);
+        }
+        
         if (fs.existsSync(dirPath)) {
             try {
                 if (fs.rmSync) {
@@ -373,6 +476,115 @@ class OmniLoggerPlugin extends obsidian.Plugin {
         }
         
         await this.loadCustomTemplatesFromVault();
+    }
+
+    async updateMetaBindButton(t) {
+        const fs = require('fs');
+        const path = require('path');
+        const vaultPath = this.app.vault.adapter.getBasePath();
+        const metaBindPath = path.join(vaultPath, '.obsidian', 'plugins', 'obsidian-meta-bind-plugin', 'data.json');
+        
+        if (!fs.existsSync(metaBindPath)) return;
+        
+        try {
+            const data = JSON.parse(fs.readFileSync(metaBindPath, 'utf8'));
+            if (!data.buttonTemplates) data.buttonTemplates = [];
+            
+            const label = t.mode === 'ble' ? `Sync ${t.name}` : `Log ${t.name}`;
+            const icon = t.mode === 'ble' ? 'battery-charging' : 'clipboard-list';
+            const tooltip = t.mode === 'ble' ? `Sync BLE metrics for ${t.name}` : `Open logger for ${t.name}`;
+
+            if (!existing) {
+                existing = {
+                    label: label,
+                    icon: icon,
+                    style: "primary",
+                    class: "",
+                    cssStyle: "",
+                    backgroundImage: "",
+                    tooltip: tooltip,
+                    id: btnId,
+                    hidden: false,
+                    actions: [
+                        {
+                            type: "command",
+                            command: `omni-logger:run-template-${t.id}`
+                        }
+                    ]
+                };
+                data.buttonTemplates.push(existing);
+            } else {
+                existing.label = label;
+                existing.icon = icon;
+                existing.tooltip = tooltip;
+                existing.actions = [
+                    {
+                        type: "command",
+                        command: `omni-logger:run-template-${t.id}`
+                    }
+                ];
+            }
+            
+            fs.writeFileSync(metaBindPath, JSON.stringify(data, null, 2), 'utf8');
+            new obsidian.Notice(`Meta Bind button "${btnId}" template synchronized!`);
+        } catch (e) {
+            console.error("Failed to update Meta Bind button:", e);
+        }
+    }
+
+    async removeMetaBindButton(id) {
+        const fs = require('fs');
+        const path = require('path');
+        const vaultPath = this.app.vault.adapter.getBasePath();
+        const metaBindPath = path.join(vaultPath, '.obsidian', 'plugins', 'obsidian-meta-bind-plugin', 'data.json');
+        
+        if (!fs.existsSync(metaBindPath)) return;
+        
+        try {
+            const data = JSON.parse(fs.readFileSync(metaBindPath, 'utf8'));
+            if (!data.buttonTemplates) return;
+            
+            const btnId = `${id}-btn`;
+            const initialLen = data.buttonTemplates.length;
+            data.buttonTemplates = data.buttonTemplates.filter(b => b.id !== btnId);
+            
+            if (data.buttonTemplates.length < initialLen) {
+                fs.writeFileSync(metaBindPath, JSON.stringify(data, null, 2), 'utf8');
+                new obsidian.Notice(`Removed Meta Bind button template "${btnId}".`);
+            }
+        } catch (e) {
+            console.error("Failed to remove Meta Bind button:", e);
+        }
+    }
+
+    async runBackgroundBLESyncs() {
+        if (this.localSettings && this.localSettings.enableBLESync === false) {
+            return;
+        }
+        const path = require('path');
+        const vaultPath = this.app.vault.adapter.getBasePath();
+        const folderName = this.settings.ingredientsFolder || 'Omni_Templates';
+        
+        for (const t of this.settings.customTemplates) {
+            if (t.mode === 'ble' && t.syncStyle === 'automatic') {
+                const intervalMinutes = t.syncInterval || 15;
+                const lastSync = this.lastSyncTimes[t.id] || 0;
+                const now = Date.now();
+                
+                if (now - lastSync >= intervalMinutes * 60 * 1000) {
+                    this.lastSyncTimes[t.id] = now;
+                    const cleanDirName = t.name.replace(/[^a-zA-Z0-9 _-]/g, '');
+                    const absoluteTemplatePath = path.join(vaultPath, folderName, cleanDirName);
+                    
+                    const dailyFile = this.getDailyNoteFile();
+                    if (!dailyFile) continue;
+                    
+                    const absoluteDailyPath = path.join(vaultPath, dailyFile.path);
+                    console.log(`[Omni-Logger] Automatic background BLE sync triggered for template "${t.name}" (MAC: ${t.macAddress})`);
+                    this.runPythonScript('log_ble.py', `--template-dir "${absoluteTemplatePath}" --file "${absoluteDailyPath}"`, true);
+                }
+            }
+        }
     }
 
     async callLLM(provider, model, systemPrompt, promptText, imageBase64 = null, imageMimeType = null) {
@@ -684,6 +896,39 @@ class OmniLoggerPlugin extends obsidian.Plugin {
 
     async saveSettings() {
         await this.saveData(this.settings);
+    }
+
+    async loadLocalSettings() {
+        const fs = require('fs');
+        const path = require('path');
+        const pluginDir = path.join(this.app.vault.adapter.getBasePath(), '.obsidian', 'plugins', 'omni-logger');
+        const localSettingsPath = path.join(pluginDir, 'local-settings.json');
+        
+        this.localSettings = {
+            enableBLESync: true
+        };
+        
+        if (fs.existsSync(localSettingsPath)) {
+            try {
+                const data = JSON.parse(fs.readFileSync(localSettingsPath, 'utf8'));
+                this.localSettings = Object.assign(this.localSettings, data);
+            } catch (e) {
+                console.error("[Omni-Logger] Failed to load local-settings.json:", e);
+            }
+        }
+    }
+
+    async saveLocalSettings() {
+        const fs = require('fs');
+        const path = require('path');
+        const pluginDir = path.join(this.app.vault.adapter.getBasePath(), '.obsidian', 'plugins', 'omni-logger');
+        const localSettingsPath = path.join(pluginDir, 'local-settings.json');
+        
+        try {
+            fs.writeFileSync(localSettingsPath, JSON.stringify(this.localSettings, null, 2), 'utf8');
+        } catch (e) {
+            console.error("[Omni-Logger] Failed to save local-settings.json:", e);
+        }
     }
 
     async getSecret(secretId, fallbackSettingKey) {
@@ -1522,36 +1767,72 @@ Return your response strictly as a JSON object matching this schema:
         const fs = require('fs');
         const vaultPath = this.app.vault.adapter.getBasePath();
         const sep = vaultPath.includes('/') ? '/' : '\\';
+        const folderName = this.settings.ingredientsFolder || 'Omni_Templates';
+        const vaultJsonPath = `${vaultPath}${sep}${folderName}${sep}health_go_to_items.json`;
         const pluginJsonPath = `${vaultPath}${sep}.obsidian${sep}plugins${sep}omni-logger${sep}health_go_to_items.json`;
+        
+        if (fs.existsSync(vaultJsonPath)) {
+            try {
+                const content = fs.readFileSync(vaultJsonPath, 'utf8');
+                const data = JSON.parse(content);
+                return data.go_to_items || [];
+            } catch(e) {
+                console.error("Failed to parse go-to items from vault:", e);
+            }
+        }
         
         if (fs.existsSync(pluginJsonPath)) {
             try {
                 const content = fs.readFileSync(pluginJsonPath, 'utf8');
                 const data = JSON.parse(content);
+                const vaultTemplatesDir = `${vaultPath}${sep}${folderName}`;
+                if (!fs.existsSync(vaultTemplatesDir)) {
+                    fs.mkdirSync(vaultTemplatesDir, { recursive: true });
+                }
+                fs.writeFileSync(vaultJsonPath, content, 'utf8');
+                try { fs.unlinkSync(pluginJsonPath); } catch(e) {}
                 return data.go_to_items || [];
             } catch(e) {
-                console.error("Failed to parse go-to items:", e);
+                console.error("Failed to migrate go-to items:", e);
             }
         }
-        return [];
+        
+        const defaultRegistry = {
+            go_to_items: [
+                { id: "americano", name: "Americano", category: "caffeine", default_amount: 1, unit: "cup (12 oz)", caffeine_mg: 150, health_connect_type: "nutrition", nutrients: { caffeine: 0.150 } },
+                { id: "espresso", name: "Espresso", category: "caffeine", default_amount: 1, unit: "shot", caffeine_mg: 75, health_connect_type: "nutrition", nutrients: { caffeine: 0.075 } },
+                { id: "coffee", name: "Coffee", category: "caffeine", default_amount: 1, unit: "cup (8 oz)", caffeine_mg: 95, health_connect_type: "nutrition", nutrients: { caffeine: 0.095 } },
+                { id: "cold_brew", name: "Cold Brew", category: "caffeine", default_amount: 1, unit: "glass (12 oz)", caffeine_mg: 150, health_connect_type: "nutrition", nutrients: { caffeine: 0.150 } },
+                { id: "protein_shake", name: "Protein Shake", category: "nutrition", default_amount: 1, unit: "serving", protein_g: 30, calories: 160, health_connect_type: "nutrition", nutrients: { protein: 30.0, energy: 160.0 } },
+                { id: "beer", name: "Beer (IPA / Stout / Ale)", category: "alcohol", default_amount: 1, unit: "can (12 oz)", alcohol_g: 14, health_connect_type: "alcohol_consumption", nutrients: { alcohol: 14.0 } },
+                { id: "wine", name: "Wine", category: "alcohol", default_amount: 1, unit: "glass (5 oz)", alcohol_g: 14, health_connect_type: "alcohol_consumption", nutrients: { alcohol: 14.0 } },
+                { id: "water", name: "Water (Cup)", category: "hydration", default_amount: 1, unit: "cup (8 oz / 250 ml)", water_ml: 250.0, health_connect_type: "hydration", nutrients: {} },
+                { id: "water_bottle", name: "Water (Bottle)", category: "hydration", default_amount: 1, unit: "bottle (16.9 oz / 500 ml)", water_ml: 500.0, health_connect_type: "hydration", nutrients: {} }
+            ]
+        };
+        try {
+            const vaultTemplatesDir = `${vaultPath}${sep}${folderName}`;
+            if (!fs.existsSync(vaultTemplatesDir)) {
+                fs.mkdirSync(vaultTemplatesDir, { recursive: true });
+            }
+            fs.writeFileSync(vaultJsonPath, JSON.stringify(defaultRegistry, null, 2), 'utf8');
+        } catch(e) {}
+        return defaultRegistry.go_to_items;
     }
 
     async saveGoToItems(items) {
         const fs = require('fs');
         const vaultPath = this.app.vault.adapter.getBasePath();
         const sep = vaultPath.includes('/') ? '/' : '\\';
-        const pluginJsonPath = `${vaultPath}${sep}.obsidian${sep}plugins${sep}omni-logger${sep}health_go_to_items.json`;
-        const devJsonPath = `${vaultPath}${sep}..${sep}antigravity${sep}omni-logger${sep}health_go_to_items.json`;
+        const folderName = this.settings.ingredientsFolder || 'Omni_Templates';
+        const vaultJsonPath = `${vaultPath}${sep}${folderName}${sep}health_go_to_items.json`;
         
         const payload = JSON.stringify({ go_to_items: items }, null, 2);
         
         try {
-            fs.writeFileSync(pluginJsonPath, payload, 'utf8');
-            if (fs.existsSync(`${vaultPath}${sep}..${sep}antigravity${sep}omni-logger`)) {
-                fs.writeFileSync(devJsonPath, payload, 'utf8');
-            }
+            fs.writeFileSync(vaultJsonPath, payload, 'utf8');
         } catch(e) {
-            console.error("Failed to save go-to items:", e);
+            console.error("Failed to save go-to items to vault:", e);
         }
     }
 
@@ -1687,51 +1968,71 @@ Return your response strictly as a JSON object matching this schema:
         log("Sidebar organize end");
     }
 
-    async runPythonScript(scriptName, scriptArgs = "") {
-        const child_process = require('child_process');
-        const path = require('path');
-        
-        const vaultPath = this.app.vault.adapter.getBasePath();
-        const sep = vaultPath.includes('/') ? '/' : '\\';
-        const scriptPath = `${vaultPath}${sep}.obsidian${sep}plugins${sep}omni-logger${sep}${scriptName}`;
-        
-        const dailyFile = this.getDailyNoteFile();
-        if (!dailyFile) {
-            new obsidian.Notice("Daily note not found!");
-            return;
-        }
-        const absoluteDailyPath = path.join(vaultPath, dailyFile.path);
-        
-        let geminiKey = await this.getSecret(this.settings.geminiApiKeyId || 'omni-logger-gemini-api-key', 'geminiApiKey');
-        if (!geminiKey) {
-            geminiKey = await this.getSecret('timeblocker-gemini-api-key', 'geminiApiKey');
-        }
-        const env = Object.assign({}, process.env, {
-            GEMINI_API_KEY: geminiKey
-        });
-        
-        const os = require('os');
-        const fs = require('fs');
-        const pluginDir = `${vaultPath}${sep}.obsidian${sep}plugins${sep}omni-logger`;
-        const venvPython = os.platform() === 'win32'
-            ? path.join(pluginDir, '.venv', 'Scripts', 'python.exe')
-            : path.join(pluginDir, '.venv', 'bin', 'python');
-        const pythonCmd = fs.existsSync(venvPython) ? `"${venvPython}"` : 'python';
-        
-        const argsStr = scriptArgs ? " " + scriptArgs : ` "${absoluteDailyPath}"`;
-        const cmd = `${pythonCmd} -u "${scriptPath}"${argsStr}`;
-        console.log(`Running Python script: ${cmd}`);
-        
-        child_process.exec(cmd, { env: env }, (err, stdout, stderr) => {
-            if (err) {
-                console.error(`Script error: ${stderr || err.message}`);
-                new obsidian.Notice(`Error running ${scriptName}: ${stderr || err.message}`);
-            } else {
-                console.log(`Script output: ${stdout}`);
-                if (stdout.trim()) {
-                    new obsidian.Notice(stdout.trim());
+    runPythonScript(scriptName, scriptArgs = "", isBackground = false) {
+        return new Promise((resolve, reject) => {
+            const child_process = require('child_process');
+            const path = require('path');
+            
+            const vaultPath = this.app.vault.adapter.getBasePath();
+            const sep = vaultPath.includes('/') ? '/' : '\\';
+            
+            let scriptPath;
+            if (scriptName.startsWith('/') || scriptName.startsWith('\\') || scriptName.includes(':') || scriptName.startsWith('99_System')) {
+                if (scriptName.startsWith('99_System')) {
+                    scriptPath = path.join(vaultPath, scriptName);
+                } else {
+                    scriptPath = scriptName;
                 }
+            } else {
+                scriptPath = `${vaultPath}${sep}.obsidian${sep}plugins${sep}omni-logger${sep}${scriptName}`;
             }
+            
+            const dailyFile = this.getDailyNoteFile();
+            if (!dailyFile) {
+                if (!isBackground) {
+                    new obsidian.Notice("Daily note not found!");
+                }
+                resolve();
+                return;
+            }
+            const absoluteDailyPath = path.join(vaultPath, dailyFile.path);
+            
+            this.getSecret(this.settings.geminiApiKeyId || 'omni-logger-gemini-api-key', 'geminiApiKey').then(async (geminiKey) => {
+                if (!geminiKey) {
+                    geminiKey = await this.getSecret('timeblocker-gemini-api-key', 'geminiApiKey');
+                }
+                const env = Object.assign({}, process.env, {
+                    GEMINI_API_KEY: geminiKey
+                });
+                
+                const os = require('os');
+                const fs = require('fs');
+                const pluginDir = `${vaultPath}${sep}.obsidian${sep}plugins${sep}omni-logger`;
+                const venvPython = os.platform() === 'win32'
+                    ? path.join(pluginDir, '.venv', 'Scripts', 'python.exe')
+                    : path.join(pluginDir, '.venv', 'bin', 'python');
+                const pythonCmd = fs.existsSync(venvPython) ? `"${venvPython}"` : 'python';
+                
+                const argsStr = scriptArgs ? " " + scriptArgs : ` "${absoluteDailyPath}"`;
+                const cmd = `${pythonCmd} -u "${scriptPath}"${argsStr}`;
+                console.log(`Running Python script: ${cmd}`);
+                
+                child_process.exec(cmd, { env: env }, (err, stdout, stderr) => {
+                    if (err) {
+                        console.error(`Script error: ${stderr || err.message}`);
+                        if (!isBackground) {
+                            new obsidian.Notice(`Error running ${scriptName}: ${stderr || err.message}`);
+                        }
+                        reject(err);
+                    } else {
+                        console.log(`Script output: ${stdout}`);
+                        if (stdout.trim() && !isBackground) {
+                            new obsidian.Notice(stdout.trim());
+                        }
+                        resolve(stdout);
+                    }
+                });
+            });
         });
     }
 
@@ -1893,8 +2194,12 @@ class OmniLoggerSettingTab extends obsidian.PluginSettingTab {
             localLinksDiv.style.fontSize = '0.9em';
             localLinksDiv.innerHTML = `
                 <b>📁 Local Integration Resources:</b><br>
-                • <b>Food Registry JSON:</b> <a href="file:///c:/Users/jare0/Documents/antigravity/omni-logger/health_go_to_items.json">health_go_to_items.json</a> (Edit go-to items & nutritional metadata)<br>
-                • <b>Log & Sync Script:</b> <a href="file:///c:/Users/jare0/Documents/antigravity/omni-logger/google_health_pull.py">google_health_pull.py</a> (Configured to map caffeine/alcohol to your chosen destination formatting: YAML, inline key::value, or Bottom Append)
+                • <b>Food Registry JSON:</b> <a href="file:///c:/Users/jare0/Documents/Obsidian/99_System/Omni_Templates/health_go_to_items.json">health_go_to_items.json</a> (Edit go-to items & nutritional metadata inside your vault)<br>
+                • <b>Log & Sync Script:</b> <a href="file:///c:/Users/jare0/Documents/Obsidian/.obsidian/plugins/omni-logger/health_checkin_wizard.py">health_checkin_wizard.py</a> (GUI check-in wizard)<br>
+                • <b>Sleep Logging Script:</b> <a href="file:///c:/Users/jare0/Documents/Obsidian/.obsidian/plugins/omni-logger/log_sleep.py">log_sleep.py</a> (Direct/scheduled sleep logger)<br>
+                • <b>Biometrics Logging Script:</b> <a href="file:///c:/Users/jare0/Documents/Obsidian/.obsidian/plugins/omni-logger/log_biometrics.py">log_biometrics.py</a> (Direct/scheduled biometrics logger)<br>
+                • <b>Nutrition Syncing Script:</b> <a href="file:///c:/Users/jare0/Documents/Obsidian/.obsidian/plugins/omni-logger/log_nutrition.py">log_nutrition.py</a> (Direct/scheduled nutrition logger)<br>
+                • <b>Nutrition Posting Script:</b> <a href="file:///c:/Users/jare0/Documents/Obsidian/.obsidian/plugins/omni-logger/post_nutrition.py">post_nutrition.py</a> (Post foods/drinks directly to API)
             `;
 
             // Credentials JSON
@@ -2132,6 +2437,17 @@ class OmniLoggerSettingTab extends obsidian.PluginSettingTab {
                        .setCta()
                        .onClick(() => {
                            new OmniFoodLoggerModal(this.app, this.plugin).open();
+                       });
+                });
+
+            // Health History Manager launcher
+            new obsidian.Setting(googleHealthContainer)
+                .setName('Google Health History Manager')
+                .setDesc('View, select, and batch delete erroneous nutrition or hydration log entries from Google Health.')
+                .addButton(btn => {
+                    btn.setButtonText("Manage Health History")
+                       .onClick(() => {
+                           new OmniHealthHistoryModal(this.app, this.plugin).open();
                        });
                 });
 
@@ -2515,6 +2831,58 @@ class OmniLoggerSettingTab extends obsidian.PluginSettingTab {
                     await this.plugin.saveSettings();
                 }));
 
+        new obsidian.Setting(customLogsDetailsContainer)
+            .setName('Enable Background BLE Sync on this Machine')
+            .setDesc('Toggle whether background Bluetooth sync tasks run on this specific computer. (Saved locally in local-settings.json, does not sync over Obsidian Sync).')
+            .addToggle(toggle => toggle
+                .setValue(this.plugin.localSettings?.enableBLESync !== false)
+                .onChange(async (value) => {
+                    this.plugin.localSettings.enableBLESync = value;
+                    await this.plugin.saveLocalSettings();
+                }));
+
+        new obsidian.Setting(customLogsDetailsContainer)
+            .setName('Scan BLE Devices')
+            .setDesc('Scan for visible Bluetooth Low Energy devices nearby.')
+            .addButton(btn => btn
+                .setButtonText('Scan Now')
+                .onClick(async () => {
+                    btn.setButtonText('Scanning...');
+                    new obsidian.Notice("Starting Bluetooth scan...");
+                    const child_process = require('child_process');
+                    const path = require('path');
+                    const vaultPath = this.plugin.app.vault.adapter.getBasePath();
+                    const sep = vaultPath.includes('/') ? '/' : '\\';
+                    const pluginDir = `${vaultPath}${sep}.obsidian${sep}plugins${sep}omni-logger`;
+                    const venvPython = require('os').platform() === 'win32'
+                        ? path.join(pluginDir, '.venv', 'Scripts', 'python.exe')
+                        : path.join(pluginDir, '.venv', 'bin', 'python');
+                    const pythonCmd = require('fs').existsSync(venvPython) ? `"${venvPython}"` : 'python';
+                    const scriptPath = `${pluginDir}${sep}ble_scan.py`;
+                    
+                    child_process.exec(`${pythonCmd} "${scriptPath}"`, (err, stdout, stderr) => {
+                        btn.setButtonText('Scan Now');
+                        if (err) {
+                            new obsidian.Notice("Scan failed: " + (stderr || err.message));
+                            return;
+                        }
+                        try {
+                            const devices = JSON.parse(stdout.trim());
+                            if (devices.error) {
+                                new obsidian.Notice("Scan failed: " + devices.error);
+                            } else if (devices.length === 0) {
+                                new obsidian.Notice("No BLE devices found nearby.");
+                            } else {
+                                const listStr = devices.map(d => `• ${d.name} (${d.address})`).join('\n');
+                                new obsidian.Notice(`Found BLE Devices:\n\n${listStr}`, 10000);
+                            }
+                        } catch (e) {
+                            new obsidian.Notice("Failed to parse scan output: " + stdout);
+                        }
+                    });
+                })
+            );
+
         const templatesContainer = customLogsDetailsContainer.createDiv();
         const renderTemplates = () => {
             templatesContainer.empty();
@@ -2561,46 +2929,226 @@ class OmniLoggerSettingTab extends obsidian.PluginSettingTab {
                         renderTemplates();
                     };
                     
-                    const promptArea = itemDiv.createEl('textarea');
-                    promptArea.style.width = '100%';
-                    promptArea.style.marginTop = '10px';
-                    promptArea.style.height = '80px';
-                    promptArea.value = t.prompt || '';
+                    let configArea;
+                    if (t.mode === 'ble') {
+                        configArea = itemDiv.createEl('textarea');
+                        configArea.style.width = '100%';
+                        configArea.style.marginTop = '10px';
+                        configArea.style.height = '180px';
+                        configArea.style.fontFamily = 'monospace';
+                        
+                        const bleConfig = Object.assign({}, t);
+                        delete bleConfig.prompt;
+                        delete bleConfig.instructions;
+                        delete bleConfig.exampleInput;
+                        delete bleConfig.targetAppearance;
+                        configArea.value = JSON.stringify(bleConfig, null, 2);
+
+                        const syncStyleContainer = itemDiv.createDiv();
+                        syncStyleContainer.style.marginTop = '10px';
+                        syncStyleContainer.style.display = 'flex';
+                        syncStyleContainer.style.flexDirection = 'column';
+                        syncStyleContainer.style.gap = '8px';
+                        
+                        const styleRow = syncStyleContainer.createDiv();
+                        styleRow.style.display = 'flex';
+                        styleRow.style.justifyContent = 'space-between';
+                        styleRow.style.alignItems = 'center';
+                        styleRow.createSpan({ text: "Sync Style:" });
+                        const styleSelect = styleRow.createEl('select');
+                        styleSelect.createEl('option', { value: 'manual', text: 'Manual (Button/Palette)' });
+                        styleSelect.createEl('option', { value: 'automatic', text: 'Automatic (Background Polling)' });
+                        styleSelect.value = t.syncStyle || 'manual';
+                        
+                        const intervalRow = syncStyleContainer.createDiv();
+                        intervalRow.style.display = 'flex';
+                        intervalRow.style.justifyContent = 'space-between';
+                        intervalRow.style.alignItems = 'center';
+                        intervalRow.createSpan({ text: "Sync Frequency (minutes):" });
+                        const intervalInput = intervalRow.createEl('input', { type: 'number' });
+                        intervalInput.style.width = '70px';
+                        intervalInput.min = '1';
+                        intervalInput.value = t.syncInterval || 15;
+                        
+                        const warningEl = syncStyleContainer.createEl('p', { 
+                            text: "⚠️ Warning: Polling more frequently will drain the device's battery significantly faster.",
+                            cls: 'setting-item-description'
+                        });
+                        warningEl.style.color = 'var(--text-accent)';
+                        warningEl.style.fontSize = '0.85em';
+                        warningEl.style.margin = '4px 0 0 0';
+                        
+                        const updateConfigArea = () => {
+                            try {
+                                const parsed = JSON.parse(configArea.value);
+                                parsed.syncStyle = styleSelect.value;
+                                parsed.syncInterval = parseInt(intervalInput.value) || 15;
+                                parsed.destination = destSelect.value;
+                                configArea.value = JSON.stringify(parsed, null, 2);
+                            } catch(e) {}
+                        };
+                        
+                        const toggleInterval = () => {
+                            if (styleSelect.value === 'automatic') {
+                                intervalRow.style.display = 'flex';
+                                warningEl.style.display = 'block';
+                            } else {
+                                intervalRow.style.display = 'none';
+                                warningEl.style.display = 'none';
+                            }
+                        };
+                        
+                        styleSelect.onchange = () => {
+                            toggleInterval();
+                            updateConfigArea();
+                        };
+                        intervalInput.onchange = () => {
+                            updateConfigArea();
+                        };
+                        destSelect.onchange = () => {
+                            updateConfigArea();
+                        };
+                        
+                        toggleInterval();
+                        updateConfigArea();
+                        
+                        const codeBlockRow = syncStyleContainer.createDiv();
+                        codeBlockRow.style.marginTop = '8px';
+                        codeBlockRow.style.display = 'flex';
+                        codeBlockRow.style.justifyContent = 'space-between';
+                        codeBlockRow.style.alignItems = 'center';
+                        codeBlockRow.style.gap = '10px';
+                        
+                        const labelSpan = codeBlockRow.createSpan({ text: "Meta Bind Button:" });
+                        labelSpan.style.fontSize = '0.9em';
+                        
+                        const btnAndCode = codeBlockRow.createDiv();
+                        btnAndCode.style.display = 'flex';
+                        btnAndCode.style.alignItems = 'center';
+                        btnAndCode.style.gap = '8px';
+                        
+                        const codeVal = `\`BUTTON[${t.id}-btn]\``;
+                        const codeEl = btnAndCode.createEl('code', { text: codeVal });
+                        codeEl.style.cursor = 'pointer';
+                        codeEl.title = 'Click to copy to clipboard';
+                        codeEl.onclick = () => {
+                            navigator.clipboard.writeText(codeVal);
+                            new obsidian.Notice("Copied Meta Bind code to clipboard!");
+                        };
+                        
+                        const registerBtn = btnAndCode.createEl('button', { text: 'Register/Sync Button', cls: 'mod-normal' });
+                        registerBtn.style.padding = '2px 8px';
+                        registerBtn.style.fontSize = '0.85em';
+                        registerBtn.onclick = async () => {
+                            await this.plugin.updateMetaBindButton(t);
+                        };
+                    } else {
+                        const promptArea = itemDiv.createEl('textarea');
+                        promptArea.style.width = '100%';
+                        promptArea.style.marginTop = '10px';
+                        promptArea.style.height = '80px';
+                        promptArea.value = t.prompt || '';
+                        t._promptArea = promptArea;
+
+                        const codeBlockRow = itemDiv.createDiv();
+                        codeBlockRow.style.marginTop = '8px';
+                        codeBlockRow.style.display = 'flex';
+                        codeBlockRow.style.justifyContent = 'space-between';
+                        codeBlockRow.style.alignItems = 'center';
+                        codeBlockRow.style.gap = '10px';
+                        
+                        const labelSpan = codeBlockRow.createSpan({ text: "Meta Bind Button:" });
+                        labelSpan.style.fontSize = '0.9em';
+                        
+                        const btnAndCode = codeBlockRow.createDiv();
+                        btnAndCode.style.display = 'flex';
+                        btnAndCode.style.alignItems = 'center';
+                        btnAndCode.style.gap = '8px';
+                        
+                        const codeVal = `\`BUTTON[${t.id}-btn]\``;
+                        const codeEl = btnAndCode.createEl('code', { text: codeVal });
+                        codeEl.style.cursor = 'pointer';
+                        codeEl.title = 'Click to copy to clipboard';
+                        codeEl.onclick = () => {
+                            navigator.clipboard.writeText(codeVal);
+                            new obsidian.Notice("Copied Meta Bind code to clipboard!");
+                        };
+                        
+                        const registerBtn = btnAndCode.createEl('button', { text: 'Register/Sync Button', cls: 'mod-normal' });
+                        registerBtn.style.padding = '2px 8px';
+                        registerBtn.style.fontSize = '0.85em';
+                        registerBtn.onclick = async () => {
+                            await this.plugin.updateMetaBindButton(t);
+                        };
+                    }
                     
                     editBtn.onclick = async () => {
-                        t.prompt = promptArea.value;
                         t.destination = destSelect.value;
-                        
                         const cleanDirName = t.name.replace(/[^a-zA-Z0-9 _-]/g, '');
                         const metadataPath = `${this.app.vault.adapter.getBasePath()}/${this.plugin.settings.ingredientsFolder}/${cleanDirName}/metadata.json`;
                         const fs = require('fs');
-                        if (fs.existsSync(metadataPath)) {
+                        
+                        if (t.mode === 'ble') {
                             try {
-                                let m = JSON.parse(fs.readFileSync(metadataPath, 'utf8'));
-                                m.prompt = t.prompt;
-                                m.destination = t.destination;
-                                fs.writeFileSync(metadataPath, JSON.stringify(m, null, 2), 'utf8');
-                                new obsidian.Notice(`Saved template "${t.name}"!`);
-                            } catch(e) {
-                                new obsidian.Notice(`Failed to save template file: ${e.message}`);
-                            }
-                        } else {
-                            try {
-                                const dirPath = `${this.app.vault.adapter.getBasePath()}/${this.plugin.settings.ingredientsFolder}/${cleanDirName}`;
-                                if (!fs.existsSync(dirPath)) {
-                                    fs.mkdirSync(dirPath, { recursive: true });
-                                }
-                                const m = {
+                                const parsedConfig = JSON.parse(configArea.value);
+                                Object.assign(t, parsedConfig);
+                                t.destination = destSelect.value;
+                                t.syncStyle = styleSelect.value;
+                                t.syncInterval = parseInt(intervalInput.value) || 15;
+                                
+                                const cleanMeta = {
                                     id: t.id,
                                     name: t.name,
+                                    mode: t.mode,
                                     destination: t.destination,
-                                    prompt: t.prompt,
-                                    mode: t.mode
+                                    macAddress: t.macAddress,
+                                    useLoraxHandshake: t.useLoraxHandshake,
+                                    commandUuid: t.commandUuid,
+                                    responseUuid: t.responseUuid,
+                                    handshakeKeyBase64: t.handshakeKeyBase64,
+                                    metrics: t.metrics,
+                                    syncStyle: t.syncStyle,
+                                    syncInterval: t.syncInterval
                                 };
-                                fs.writeFileSync(metadataPath, JSON.stringify(m, null, 2), 'utf8');
-                                new obsidian.Notice(`Created and saved template "${t.name}"!`);
-                            } catch(e) {
-                                new obsidian.Notice(`Failed to write template file: ${e.message}`);
+                                
+                                fs.writeFileSync(metadataPath, JSON.stringify(cleanMeta, null, 2), 'utf8');
+                                await this.plugin.updateMetaBindButton(t);
+                                new obsidian.Notice(`Saved BLE template "${t.name}"!`);
+                                renderTemplates();
+                            } catch (e) {
+                                new obsidian.Notice("Failed to save BLE template: invalid JSON format.");
+                            }
+                        } else {
+                            t.prompt = t._promptArea ? t._promptArea.value : '';
+                            if (fs.existsSync(metadataPath)) {
+                                try {
+                                    let m = JSON.parse(fs.readFileSync(metadataPath, 'utf8'));
+                                    m.prompt = t.prompt;
+                                    m.destination = t.destination;
+                                    fs.writeFileSync(metadataPath, JSON.stringify(m, null, 2), 'utf8');
+                                    await this.plugin.updateMetaBindButton(t);
+                                    new obsidian.Notice(`Saved template "${t.name}"!`);
+                                } catch(e) {
+                                    new obsidian.Notice(`Failed to save template file: ${e.message}`);
+                                }
+                            } else {
+                                try {
+                                    const dirPath = `${this.app.vault.adapter.getBasePath()}/${this.plugin.settings.ingredientsFolder}/${cleanDirName}`;
+                                    if (!fs.existsSync(dirPath)) {
+                                        fs.mkdirSync(dirPath, { recursive: true });
+                                    }
+                                    const m = {
+                                        id: t.id,
+                                        name: t.name,
+                                        destination: t.destination,
+                                        prompt: t.prompt,
+                                        mode: t.mode
+                                    };
+                                    fs.writeFileSync(metadataPath, JSON.stringify(m, null, 2), 'utf8');
+                                    new obsidian.Notice(`Created and saved template "${t.name}"!`);
+                                } catch(e) {
+                                    new obsidian.Notice(`Failed to write template file: ${e.message}`);
+                                }
                             }
                         }
                     };
@@ -2698,7 +3246,7 @@ class OmniLoggerModal extends obsidian.Modal {
                     previewContainer.style.display = 'none';
                 }
                 formContainer.style.display = 'none';
-            } else {
+            } else if (this.selectedMode === 'api') {
                 dropZone.style.display = 'none';
                 previewContainer.style.display = 'none';
                 formContainer.style.display = 'block';
@@ -2718,6 +3266,44 @@ class OmniLoggerModal extends obsidian.Modal {
                 } else {
                     formContainer.createEl('p', { text: 'Direct API payload is not supported for this category. Please use Clipboard / OCR mode.' });
                 }
+            } else if (this.selectedMode === 'ble') {
+                dropZone.style.display = 'none';
+                previewContainer.style.display = 'none';
+                formContainer.style.display = 'block';
+                formContainer.empty();
+                
+                formContainer.createEl('p', { text: `Pulls metrics from your ${customTemplate.name} BLE device.` });
+                const syncBtn = formContainer.createEl('button', { text: 'Sync BLE Device Now', cls: 'mod-cta' });
+                syncBtn.style.marginTop = '10px';
+                syncBtn.onclick = async () => {
+                    syncBtn.disabled = true;
+                    syncBtn.textContent = 'Syncing...';
+                    const folderName = this.plugin.settings.ingredientsFolder || 'Omni_Templates';
+                    const path = require('path');
+                    const vaultPath = this.plugin.app.vault.adapter.getBasePath();
+                    const cleanDirName = customTemplate.name.replace(/[^a-zA-Z0-9 _-]/g, '');
+                    const absoluteTemplatePath = path.join(vaultPath, folderName, cleanDirName);
+                    
+                    const dailyFile = this.plugin.getDailyNoteFile();
+                    if (!dailyFile) {
+                        new obsidian.Notice("Daily note not found!");
+                        syncBtn.disabled = false;
+                        syncBtn.textContent = 'Sync BLE Device Now';
+                        return;
+                    }
+                    const absoluteDailyPath = path.join(vaultPath, dailyFile.path);
+                    
+                    new obsidian.Notice(`Starting BLE sync for ${customTemplate.name}...`);
+                    try {
+                        await this.plugin.runPythonScript('log_ble.py', `--template-dir "${absoluteTemplatePath}" --file "${absoluteDailyPath}"`);
+                        statusBar.setText("BLE sync completed successfully!");
+                        setTimeout(() => this.close(), 1500);
+                    } catch (e) {
+                        new obsidian.Notice("BLE sync failed: " + e.message);
+                        syncBtn.disabled = false;
+                        syncBtn.textContent = 'Sync BLE Device Now';
+                    }
+                };
             }
         };
 
@@ -2860,15 +3446,17 @@ class OmniTemplateCreatorModal extends obsidian.Modal {
 
         const modeSetting = new obsidian.Setting(mainContainer)
             .setName('Source Mode')
-            .setDesc('Whether you will paste a screenshot (OCR) or input raw API text.')
+            .setDesc('Select the method to capture data: Clipboard/OCR, Direct API, or BLE Polling.')
             .addDropdown(dropdown => dropdown
                 .addOption('ocr', 'Clipboard / OCR')
                 .addOption('api', 'API / Text Payload')
+                .addOption('ble', 'Bluetooth Low Energy (BLE)')
                 .setValue(this.mode)
                 .onChange(val => {
                     this.mode = val;
                     this.exampleInput = "";
                     updateInputSection();
+                    updateButtons();
                 })
             );
 
@@ -2926,19 +3514,47 @@ class OmniTemplateCreatorModal extends obsidian.Modal {
             this.exampleInput = e.target.value;
         };
 
+        const bleContainer = document.createElement('div');
+        bleContainer.className = 'omni-ble-creator-container';
+        bleContainer.createEl('p', { text: 'Configure default BLE fields for the new template.' });
+        
+        const macSetting = new obsidian.Setting(bleContainer)
+            .setName('Device MAC Address')
+            .setDesc('Enter the target BLE MAC address (e.g. 84:71:27:56:30:07). Use the Settings scan tool to discover it.')
+            .addText(text => text
+                .setPlaceholder('AA:BB:CC:DD:EE:FF')
+                .onChange(val => this.macAddress = val.trim())
+            );
+
         const updateInputSection = () => {
             inputSection.empty();
             if (this.mode === 'ocr') {
                 previewContainer.style.display = 'none';
                 dropZone.style.display = 'flex';
                 inputSection.appendChild(ocrContainer);
-            } else {
+            } else if (this.mode === 'api') {
                 apiTextarea.value = "";
                 inputSection.appendChild(apiTextarea);
+            } else if (this.mode === 'ble') {
+                inputSection.appendChild(bleContainer);
+            }
+        };
+
+        const updateButtons = () => {
+            if (this.mode === 'ble') {
+                generateBtn.style.display = 'none';
+                saveBtn.style.display = 'inline-block';
+                statusBar.setText("Status: Configure details and click Save.");
+            } else {
+                generateBtn.style.display = 'inline-block';
+                saveBtn.style.display = 'none';
+                reviewContainer.style.display = 'none';
+                statusBar.setText("Status: Fill details and generate prompt.");
             }
         };
 
         updateInputSection();
+        updateButtons();
 
         this.pasteListener = (evt) => {
             if (this.mode !== 'ocr') return;
@@ -3031,17 +3647,45 @@ class OmniTemplateCreatorModal extends obsidian.Modal {
         };
 
         saveBtn.onclick = async () => {
-            if (!this.name || !this.generatedPrompt) {
-                new obsidian.Notice("Missing required template fields!");
+            if (!this.name) {
+                new obsidian.Notice("Please enter a template name!");
                 return;
             }
-            const newTemplate = {
-                id: 'custom-' + Date.now(),
-                name: this.name,
-                mode: this.mode,
-                destination: this.destination,
-                prompt: this.generatedPrompt
-            };
+            let newTemplate;
+            if (this.mode === 'ble') {
+                newTemplate = {
+                    id: 'custom-ble-' + Date.now(),
+                    name: this.name,
+                    mode: 'ble',
+                    destination: this.destination,
+                    macAddress: this.macAddress || "00:00:00:00:00:00",
+                    useLoraxHandshake: false,
+                    commandUuid: "",
+                    responseUuid: "",
+                    handshakeKeyBase64: "",
+                    metrics: [
+                        {
+                            name: "Battery Level",
+                            characteristicUuid: "00002a19-0000-1000-8000-00805f9b34fb",
+                            parser: "uint16_le",
+                            destination: this.destination,
+                            key: "device_battery"
+                        }
+                    ]
+                };
+            } else {
+                if (!this.generatedPrompt) {
+                    new obsidian.Notice("Missing generated prompt!");
+                    return;
+                }
+                newTemplate = {
+                    id: 'custom-' + Date.now(),
+                    name: this.name,
+                    mode: this.mode,
+                    destination: this.destination,
+                    prompt: this.generatedPrompt
+                };
+            }
             await this.plugin.saveCustomTemplateToVault(newTemplate, this.exampleInput, this.targetAppearance, this.customInstructions);
             new obsidian.Notice("Saved template " + this.name);
             if (this.onSave) {
@@ -3161,11 +3805,14 @@ class OmniFoodLoggerModal extends obsidian.Modal {
                         logBtn.setText('Log to Google Health');
                         return;
                     }
-                    const notePath = this.plugin.app.vault.adapter.getFullPath(dailyFile.path);
+                    const path = require('path');
+                    const vaultPath = this.plugin.app.vault.adapter.getBasePath();
+                    const folderName = this.plugin.settings.ingredientsFolder || 'Omni_Templates';
+                    const registryPath = path.join(vaultPath, folderName, 'health_go_to_items.json');
                     
-                    // Trigger log_nutrition.py script via plugin runPythonScript
-                    const scriptPath = 'log_nutrition.py';
-                    const args = `--file "${notePath}" --id ${this.selectedFoodId} --amount ${this.logAmount}`;
+                    // Trigger post_nutrition.py script via plugin runPythonScript
+                    const scriptPath = 'post_nutrition.py';
+                    const args = `--id ${this.selectedFoodId} --amount ${this.logAmount} --registry "${registryPath}"`;
                     
                     await this.plugin.runPythonScript(scriptPath, args);
                     new obsidian.Notice("Successfully logged via HealthAPI.");
@@ -3287,6 +3934,260 @@ class OmniFoodLoggerModal extends obsidian.Modal {
         tabAdd.onclick = renderAddTab;
         
         renderLogTab();
+    }
+
+    onClose() {
+        this.contentEl.empty();
+    }
+}
+
+class OmniHealthHistoryModal extends obsidian.Modal {
+    constructor(app, plugin) {
+        super(app);
+        this.plugin = plugin;
+        this.selectedEntries = new Set();
+        this.dataType = "nutrition-log"; // default
+        this.entries = [];
+    }
+
+    async onOpen() {
+        const { contentEl } = this;
+        contentEl.empty();
+        
+        contentEl.createEl('h2', { text: '🗑️ Google Health History Manager', cls: 'omni-modal-title' });
+        
+        // Tab header for data types
+        const tabHeader = contentEl.createDiv({ cls: 'omni-tab-header' });
+        tabHeader.style.display = 'flex';
+        tabHeader.style.gap = '15px';
+        tabHeader.style.marginBottom = '15px';
+        tabHeader.style.borderBottom = '1px solid var(--background-modifier-border)';
+        tabHeader.style.paddingBottom = '8px';
+        
+        const tabNutrition = tabHeader.createSpan({ text: 'Nutrition Logs' });
+        const tabHydration = tabHeader.createSpan({ text: 'Hydration Logs' });
+        
+        tabNutrition.style.cursor = 'pointer';
+        tabHydration.style.cursor = 'pointer';
+        
+        const listContainer = contentEl.createDiv();
+        listContainer.style.maxHeight = '400px';
+        listContainer.style.overflowY = 'auto';
+        listContainer.style.marginBottom = '15px';
+        listContainer.style.border = '1px solid var(--background-modifier-border)';
+        listContainer.style.borderRadius = '6px';
+        listContainer.style.padding = '10px';
+        
+        const actionRow = contentEl.createDiv();
+        actionRow.style.display = 'flex';
+        actionRow.style.justifyContent = 'space-between';
+        actionRow.style.alignItems = 'center';
+        
+        const leftActions = actionRow.createDiv();
+        leftActions.style.display = 'flex';
+        leftActions.style.gap = '10px';
+        
+        const selectAllBtn = leftActions.createEl('button', { text: 'Select All', cls: 'omni-btn' });
+        const deselectAllBtn = leftActions.createEl('button', { text: 'Deselect All', cls: 'omni-btn' });
+        
+        const rightActions = actionRow.createDiv();
+        rightActions.style.display = 'flex';
+        rightActions.style.gap = '10px';
+        
+        const cancelBtn = rightActions.createEl('button', { text: 'Cancel', cls: 'omni-btn btn-cancel' });
+        cancelBtn.onclick = () => this.close();
+        
+        const deleteBtn = rightActions.createEl('button', { text: 'Delete Selected', cls: 'omni-btn btn-process' });
+        deleteBtn.style.backgroundColor = 'var(--text-error)';
+        deleteBtn.style.color = 'var(--text-on-accent)';
+        
+        const renderList = async () => {
+            listContainer.empty();
+            this.selectedEntries.clear();
+            
+            if (this.dataType === "nutrition-log") {
+                tabNutrition.style.fontWeight = 'bold';
+                tabNutrition.style.color = 'var(--text-accent)';
+                tabHydration.style.fontWeight = 'normal';
+                tabHydration.style.color = 'var(--text-muted)';
+            } else {
+                tabHydration.style.fontWeight = 'bold';
+                tabHydration.style.color = 'var(--text-accent)';
+                tabNutrition.style.fontWeight = 'normal';
+                tabNutrition.style.color = 'var(--text-muted)';
+            }
+            
+            listContainer.createEl('p', { text: 'Fetching entries from Google Health API...', cls: 'omni-loading' });
+            
+            try {
+                const token = await this.plugin.getGoogleAccessToken();
+                if (!token) throw new Error("No Google Health access token found.");
+                
+                const url = `https://health.googleapis.com/v4/users/me/dataTypes/${this.dataType}/dataPoints`;
+                const response = await obsidian.requestUrl({
+                    url: url,
+                    method: 'GET',
+                    headers: { 'Authorization': `Bearer ${token}` }
+                });
+                
+                listContainer.empty();
+                if (response.status !== 200) {
+                    listContainer.createEl('p', { text: `Failed to fetch entries: ${response.status} - ${response.text}`, cls: 'omni-error' });
+                    return;
+                }
+                
+                const data = response.json;
+                this.entries = data.dataPoints || [];
+                
+                if (this.entries.length === 0) {
+                    listContainer.createEl('p', { text: 'No recent entries found in Google Health.' });
+                    return;
+                }
+                
+                // Sort by time descending
+                this.entries.sort((a, b) => {
+                    const getEndTime = (pt) => {
+                        const val = pt.nutritionLog || pt.hydrationLog || {};
+                        return val.interval?.endTime || "";
+                    };
+                    return getEndTime(b).localeCompare(getEndTime(a));
+                });
+                
+                this.entries.forEach(pt => {
+                    const row = listContainer.createDiv();
+                    row.style.display = 'flex';
+                    row.style.alignItems = 'center';
+                    row.style.padding = '8px';
+                    row.style.borderBottom = '1px solid var(--background-modifier-border)';
+                    
+                    const chk = row.createEl('input', { type: 'checkbox' });
+                    chk.style.marginRight = '12px';
+                    chk.checked = this.selectedEntries.has(pt.name);
+                    chk.onchange = () => {
+                        if (chk.checked) {
+                            this.selectedEntries.add(pt.name);
+                        } else {
+                            this.selectedEntries.delete(pt.name);
+                        }
+                    };
+                    
+                    const infoDiv = row.createDiv();
+                    infoDiv.style.flex = '1';
+                    
+                    let title = "";
+                    let details = "";
+                    let timeStr = "";
+                    
+                    if (this.dataType === "nutrition-log") {
+                        const log = pt.nutritionLog || {};
+                        title = log.foodDisplayName || log.foodName || "Unknown Food";
+                        
+                        // Parse calories, caffeine etc
+                        const cals = log.energy?.kcal ? `${log.energy.kcal} kcal` : "";
+                        const nutrients = log.nutrients || [];
+                        let caffeine = "";
+                        let protein = "";
+                        let alcohol = "";
+                        nutrients.forEach(n => {
+                            const grams = n.quantity?.grams || 0;
+                            if (n.nutrient === "CAFFEINE") caffeine = `${Math.round(grams * 1000)} mg caffeine`;
+                            if (n.nutrient === "PROTEIN") protein = `${grams}g protein`;
+                            if (n.nutrient === "ALCOHOL") alcohol = `${grams}g alcohol`;
+                        });
+                        
+                        details = [cals, caffeine, protein, alcohol].filter(Boolean).join(" | ") || "No nutrients logged";
+                        timeStr = log.interval?.endTime ? new Date(log.interval.endTime).toLocaleString() : "Unknown Time";
+                    } else if (this.dataType === "hydration-log") {
+                        const log = pt.hydrationLog || {};
+                        const amount = log.amountConsumed?.milliliters || 0;
+                        title = `💧 Water (${amount} ml)`;
+                        details = `${Math.round(amount * 0.033814)} oz`;
+                        timeStr = log.interval?.endTime ? new Date(log.interval.endTime).toLocaleString() : "Unknown Time";
+                    }
+                    
+                    const nameSpan = infoDiv.createEl('div', { text: title });
+                    nameSpan.style.fontWeight = 'bold';
+                    
+                    const detailSpan = infoDiv.createEl('div', { text: `${timeStr} (${details})` });
+                    detailSpan.style.fontSize = '0.85em';
+                    detailSpan.style.color = 'var(--text-muted)';
+                });
+                
+            } catch(e) {
+                listContainer.empty();
+                listContainer.createEl('p', { text: `Error fetching entries: ${e.message}`, cls: 'omni-error' });
+            }
+        };
+        
+        tabNutrition.onclick = () => {
+            this.dataType = "nutrition-log";
+            renderList();
+        };
+        
+        tabHydration.onclick = () => {
+            this.dataType = "hydration-log";
+            renderList();
+        };
+        
+        selectAllBtn.onclick = () => {
+            this.entries.forEach(pt => this.selectedEntries.add(pt.name));
+            listContainer.querySelectorAll('input[type="checkbox"]').forEach((chk) => {
+                chk.checked = true;
+            });
+        };
+        
+        deselectAllBtn.onclick = () => {
+            this.selectedEntries.clear();
+            listContainer.querySelectorAll('input[type="checkbox"]').forEach((chk) => {
+                chk.checked = false;
+            });
+        };
+        
+        deleteBtn.onclick = async () => {
+            if (this.selectedEntries.size === 0) {
+                new obsidian.Notice("Please select at least one entry to delete!");
+                return;
+            }
+            
+            const count = this.selectedEntries.size;
+            if (!confirm(`Are you sure you want to delete ${count} selected entries from Google Health?`)) {
+                return;
+            }
+            
+            deleteBtn.disabled = true;
+            deleteBtn.setText('Deleting...');
+            
+            try {
+                const token = await this.plugin.getGoogleAccessToken();
+                const url = `https://health.googleapis.com/v4/users/me/dataTypes/${this.dataType}/dataPoints:batchDelete`;
+                
+                const response = await obsidian.requestUrl({
+                    url: url,
+                    method: 'POST',
+                    headers: {
+                        'Authorization': `Bearer ${token}`,
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        names: Array.from(this.selectedEntries)
+                    })
+                });
+                
+                if (response.status === 200 || response.status === 204) {
+                    new obsidian.Notice(`Successfully deleted ${count} entries!`);
+                    await renderList();
+                } else {
+                    new obsidian.Notice(`Failed to delete: ${response.status} - ${response.text}`);
+                }
+            } catch(e) {
+                new obsidian.Notice(`Error during deletion: ${e.message}`);
+            } finally {
+                deleteBtn.disabled = false;
+                deleteBtn.setText('Delete Selected');
+            }
+        };
+        
+        renderList();
     }
 
     onClose() {

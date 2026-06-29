@@ -15,21 +15,22 @@ if sys.platform == 'win32':
     except Exception:
         pass
     os.environ['PATH'] = dlls_dir + os.path.pathsep + py_dir + os.path.pathsep + os.environ.get('PATH', '')
+
 import json
 import base64
 import threading
 import requests
+import argparse
 import tkinter as tk
 from tkinter import filedialog, messagebox
 
 def get_gemini_key():
-    # 1. Check environment variables first
     env_key = os.environ.get("GEMINI_API_KEY")
     if env_key:
         return env_key
 
-    # 2. Check local data.json settings file
-    data_json_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data.json")
+    plugin_dir = os.path.dirname(os.path.abspath(__file__))
+    data_json_path = os.path.join(plugin_dir, "data.json")
     if os.path.exists(data_json_path):
         try:
             with open(data_json_path, "r", encoding="utf-8") as f:
@@ -40,19 +41,6 @@ def get_gemini_key():
         except Exception:
             pass
 
-    # 3. Check legacy fitbit_credentials.json
-    creds_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fitbit_credentials.json")
-    if os.path.exists(creds_path):
-        try:
-            with open(creds_path, "r", encoding="utf-8") as f:
-                creds = json.load(f)
-            key = creds.get("gemini_api_key")
-            if key and key.strip():
-                return key.strip()
-        except Exception:
-            pass
-
-    # 4. Check schedule assistant data.json as a fallback
     try:
         vault_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
         sa_data_path = os.path.join(vault_dir, ".obsidian", "plugins", "schedule-assistant-focus-timer", "data.json")
@@ -65,90 +53,144 @@ def get_gemini_key():
     except Exception:
         pass
 
-    raise FileNotFoundError("Gemini API Key not found in environment, omni-logger/data.json, or schedule-assistant-focus-timer/data.json. Please configure the key in Obsidian settings.")
+    raise FileNotFoundError("Gemini API Key not found. Please configure the key in Obsidian settings.")
 
-def load_prompt_from_vault():
-    try:
-        plugin_dir = os.path.dirname(os.path.abspath(__file__))
-        vault_dir = os.path.dirname(os.path.dirname(os.path.dirname(plugin_dir)))
-        
-        ingredients_folder = "99_System/Omni_Templates"
-        data_json_path = os.path.join(plugin_dir, "data.json")
-        if os.path.exists(data_json_path):
-            with open(data_json_path, "r", encoding="utf-8") as f:
-                data = json.load(f)
-                ingredients_folder = data.get("ingredientsFolder", "99_System/Omni_Templates")
-                
-        templates_path = os.path.join(vault_dir, ingredients_folder)
-        for folder_name in ["Work Calls", "Work Logs"]:
-            meta_path = os.path.join(templates_path, folder_name, "metadata.json")
-            if os.path.exists(meta_path):
-                with open(meta_path, "r", encoding="utf-8") as f:
-                    meta = json.load(f)
-                    prompt = meta.get("prompt")
-                    if prompt and prompt.strip():
-                        return prompt.strip()
-    except Exception as e:
-        print(f"Error loading template prompt: {e}")
-    return None
-
-def update_note_calls(content, calls_dict):
-    keys = list(calls_dict.keys())
-    
-    # Check if any call keys are already in the file
-    has_keys = any(f"{k}::" in content for k in keys)
-    
-    if has_keys:
-        # Replace individual lines in-place
-        lines = content.splitlines()
-        updated_keys = set()
-        for i in range(len(lines)):
-            line_strip = lines[i].strip()
-            for k in keys:
-                if line_strip.startswith(f"{k}::"):
-                    val = calls_dict[k]
-                    lines[i] = f"{k}:: {val}"
-                    updated_keys.add(k)
-        
-        # If there are any missing keys, append them under the Log heading or at the end
-        missing_keys = [k for k in keys if k not in updated_keys]
-        if missing_keys:
-            # Look for 🪵 Log heading
-            log_header_idx = -1
-            for idx, l in enumerate(lines):
-                if "## 🪵 Log" in l:
-                    log_header_idx = idx
-                    break
-            
-            insert_lines = []
-            for k in missing_keys:
-                val = calls_dict[k]
-                insert_lines.append(f"{k}:: {val}")
-                
-            if log_header_idx != -1:
-                lines.insert(log_header_idx + 1, "")
-                for line in reversed(insert_lines):
-                    lines.insert(log_header_idx + 2, line)
+def format_yaml_value(val, indent=2):
+    lines = []
+    if isinstance(val, list):
+        for item in val:
+            if isinstance(item, dict):
+                first = True
+                for k, v in item.items():
+                    if first:
+                        lines.append(f"{' ' * (indent - 2)}- {k}: {v}")
+                        first = False
+                    else:
+                        lines.append(f"{' ' * indent}{k}: {v}")
             else:
-                lines.append("")
-                lines.append("## 🪵 Log")
-                lines.extend(insert_lines)
-        
-        content = "\n".join(lines) + "\n"
-    else:
-        # Append all keys as a new block at the bottom
-        block_lines = [""]
-        for k in keys:
-            val = calls_dict[k]
-            block_lines.append(f"{k}:: {val}")
-        content = content.rstrip() + "\n" + "\n".join(block_lines) + "\n"
-        
-    return content
+                lines.append(f"{' ' * (indent - 2)}- {item}")
+    elif isinstance(val, dict):
+        for k, v in val.items():
+            lines.append(f"{' ' * indent}{k}: {v}")
+    return "\n".join(lines)
 
-class CallsLogger:
-    def __init__(self, file_path):
+def update_frontmatter_generic(content, new_data):
+    match = re.match(r"^---\r?\n(.*?)\r?\n---", content, re.DOTALL)
+    if not match:
+        fm_lines = ["---"]
+        for k, v in new_data.items():
+            if isinstance(v, (list, dict)):
+                fm_lines.append(f"{k}:")
+                fm_lines.append(format_yaml_value(v, indent=2))
+            else:
+                fm_lines.append(f'{k}: "{v}"')
+        fm_lines.append("---")
+        return "\n".join(fm_lines) + "\n\n" + content
+        
+    fm_text = match.group(1)
+    lines = fm_text.splitlines()
+    new_lines = []
+    keys_updated = set()
+    
+    idx = 0
+    while idx < len(lines):
+        line = lines[idx]
+        if line.strip() and not line.startswith(" ") and not line.startswith("-") and ":" in line:
+            parts = line.split(":", 1)
+            key = parts[0].strip()
+            if key in new_data:
+                val = new_data[key]
+                if isinstance(val, (list, dict)):
+                    new_lines.append(f"{key}:")
+                    new_lines.append(format_yaml_value(val, indent=2))
+                else:
+                    new_lines.append(f'{key}: "{val}"')
+                keys_updated.add(key)
+                idx += 1
+                while idx < len(lines) and (lines[idx].startswith(" ") or lines[idx].startswith("-")):
+                    idx += 1
+                continue
+        new_lines.append(line)
+        idx += 1
+        
+    for k, v in new_data.items():
+        if k not in keys_updated:
+            if isinstance(v, (list, dict)):
+                new_lines.append(f"{k}:")
+                new_lines.append(format_yaml_value(v, indent=2))
+            else:
+                new_lines.append(f'{k}: "{v}"')
+                
+    new_fm_text = "\n".join(new_lines)
+    return f"---\n{new_fm_text}\n---" + content[match.end():]
+
+def update_dataview_generic(content, new_data):
+    lines = content.splitlines()
+    keys_updated = set()
+    
+    for idx in range(len(lines)):
+        line_strip = lines[idx].strip()
+        for k, v in new_data.items():
+            if line_strip.startswith(f"{k}::"):
+                lines[idx] = f"{k}:: {v}"
+                keys_updated.add(k)
+                
+    missing_keys = [k for k in new_data.keys() if k not in keys_updated]
+    if missing_keys:
+        log_header_idx = -1
+        for idx, l in enumerate(lines):
+            if "## 🪵 Log" in l:
+                log_header_idx = idx
+                break
+                
+        insert_lines = []
+        for k in missing_keys:
+            insert_lines.append(f"{k}:: {new_data[k]}")
+            
+        if log_header_idx != -1:
+            lines.insert(log_header_idx + 1, "")
+            for line in reversed(insert_lines):
+                lines.insert(log_header_idx + 2, line)
+        else:
+            lines.append("")
+            lines.append("## 🪵 Log")
+            lines.extend(insert_lines)
+            
+    return "\n".join(lines) + ("\n" if content.endswith("\n") else "")
+
+def update_append_log_generic(content, new_data):
+    lines = content.rstrip().splitlines()
+    lines.append("")
+    for k, v in new_data.items():
+        lines.append(f"{k}: {v}")
+    return "\n".join(lines) + "\n"
+
+class OCRLogger:
+    def __init__(self, template_dir, file_path):
+        self.template_dir = template_dir
         self.file_path = file_path
         
+        # Load Template Metadata
+        meta_path = os.path.join(template_dir, "metadata.json")
+        if not os.path.exists(meta_path):
+            raise FileNotFoundError(f"Template metadata.json not found in {template_dir}")
+            
+        with open(meta_path, "r", encoding="utf-8") as f:
+            self.meta = json.load(f)
+            
+        self.template_name = self.meta.get("name", "Generic OCR")
+        self.destination = self.meta.get("destination", "frontmatter")
+        
+        # Load Prompt
+        self.prompt = self.meta.get("prompt", "")
+        prompt_txt_path = os.path.join(template_dir, "system_prompt.txt")
+        if os.path.exists(prompt_txt_path):
+            with open(prompt_txt_path, "r", encoding="utf-8") as f:
+                self.prompt = f.read().strip()
+                
+        if not self.prompt:
+            self.prompt = "Extract all parameters from this image. Return strictly in JSON format."
+
         # Hide root window
         self.root = tk.Tk()
         self.root.withdraw()
@@ -160,7 +202,7 @@ class CallsLogger:
             self.root.destroy()
             return
             
-        # 1. Check clipboard first
+        # Check clipboard
         from PIL import ImageGrab, Image
         import io
         
@@ -200,41 +242,34 @@ class CallsLogger:
         img_path = None
         if img_bytes is None:
             img_path = filedialog.askopenfilename(
-                title="Select Work Call Log Screenshot",
+                title=f"Select screenshot for {self.template_name}",
                 filetypes=[("Image files", "*.png *.jpg *.jpeg *.webp *.bmp")]
             )
             
             if not img_path:
-                # User cancelled
                 self.root.destroy()
                 return
             
-        # 2. Show loading window
+        # Show loading window
         self.loading_win = tk.Toplevel(self.root)
         self.loading_win.title("Processing OCR")
         self.loading_win.geometry("320x130")
         self.loading_win.configure(bg="#1e1e2e")
         self.loading_win.resizable(False, False)
-        
-        # Ensure the window knows its own size before calculating
         self.loading_win.update_idletasks()
 
-        # Get window dimensions and screen dimensions
         width = self.loading_win.winfo_width()
         height = self.loading_win.winfo_height()
         screen_width = self.loading_win.winfo_screenwidth()
         screen_height = self.loading_win.winfo_screenheight()
 
-        # Calculate center coordinates
         x = (screen_width // 2) - (width // 2)
         y = (screen_height // 2) - (height // 2)
-
-        # Apply the geometry placement
         self.loading_win.geometry(f'{width}x{height}+{x}+{y}')
         
         lbl = tk.Label(
             self.loading_win, 
-            text="Extracting Call Log data...\nPlease wait while Gemini analyzes screenshot.", 
+            text=f"Extracting {self.template_name} data...\nPlease wait while Gemini analyzes screenshot.", 
             fg="#cdd6f4", 
             bg="#1e1e2e", 
             font=("Helvetica", 11, "bold"),
@@ -243,7 +278,7 @@ class CallsLogger:
         lbl.pack(expand=True)
         self.loading_win.update()
         
-        # 3. Process in background thread
+        # Process in thread
         threading.Thread(target=self.process_image, args=(img_path, img_bytes, mime_type), daemon=True).start()
         self.root.mainloop()
         
@@ -252,7 +287,6 @@ class CallsLogger:
             if img_bytes is not None:
                 img_data = base64.b64encode(img_bytes).decode("utf-8")
             else:
-                # Read and encode image
                 with open(img_path, "rb") as f:
                     img_data = base64.b64encode(f.read()).decode("utf-8")
                     
@@ -263,39 +297,7 @@ class CallsLogger:
                     mime_type = "image/webp"
                 elif img_path.lower().endswith(".bmp"):
                     mime_type = "image/bmp"
-                
-            prompt = load_prompt_from_vault()
-            if not prompt:
-                prompt = """
-                You are a call log analyzer. Examine this phone call logs screenshot and count the number of outgoing and incoming call entries (excluding entries that are clearly not work-related if indicated, otherwise count all calls shown) grouped by hourly blocks from 8 AM to 4 PM for the target day.
-                
-                Map each call to the hour of its timestamp:
-                - 8:00 AM - 8:59 AM -> calls-08am
-                - 9:00 AM - 9:59 AM -> calls-09am
-                - 10:00 AM - 10:59 AM -> calls-10am
-                - 11:00 AM - 11:59 AM -> calls-11am
-                - 12:00 PM - 12:59 PM -> calls-12pm
-                - 1:00 PM - 1:59 PM -> calls-01pm
-                - 2:00 PM - 2:59 PM -> calls-02pm
-                - 3:00 PM - 3:59 PM -> calls-03pm
-                - 4:00 PM - 4:59 PM -> calls-04pm
-                
-                Return your findings STRICTLY in a JSON format matching this schema:
-                {
-                  "calls-08am": <integer_count>,
-                  "calls-09am": <integer_count>,
-                  "calls-10am": <integer_count>,
-                  "calls-11am": <integer_count>,
-                  "calls-12pm": <integer_count>,
-                  "calls-01pm": <integer_count>,
-                  "calls-02pm": <integer_count>,
-                  "calls-03pm": <integer_count>,
-                  "calls-04pm": <integer_count>
-                }
-                Ensure no other text is returned besides the JSON.
-                """
             
-            # Try fallback models in case of rate limits / daily quota exhaustion
             model_names = ['gemini-3.5-flash', 'gemini-3.1-flash-lite', 'gemini-2.5-flash', 'gemini-2.0-flash']
             text_response = None
             last_err = None
@@ -307,7 +309,7 @@ class CallsLogger:
                     "contents": [
                         {
                             "parts": [
-                                {"text": prompt},
+                                {"text": self.prompt},
                                 {
                                     "inlineData": {
                                         "mimeType": mime_type,
@@ -336,20 +338,38 @@ class CallsLogger:
             if not text_response:
                 raise last_err
             
-            # Parse output JSON
-            calls_dict = json.loads(text_response)
+            data = json.loads(text_response)
             
-            # Verify and update daily note
+            # Post-processing specifically for Lumosity nested scores validation
+            if self.meta.get("id") == "lumosity" or self.template_name.lower() == "lumosity":
+                raw_scores = data.get("scores", [])
+                scores = []
+                for s in raw_scores:
+                    if s and s.get("score") is not None:
+                        try:
+                            sc_val = int(float(str(s.get("score"))))
+                            if sc_val > 0:
+                                scores.append(s)
+                        except (ValueError, TypeError):
+                            pass
+                data["scores"] = scores
+            
             with open(self.file_path, "r", encoding="utf-8") as f:
                 content = f.read()
                 
-            updated_content = update_note_calls(content, calls_dict)
+            if self.destination == 'frontmatter':
+                updated_content = update_frontmatter_generic(content, data)
+            elif self.destination == 'dataview':
+                updated_content = update_dataview_generic(content, data)
+            else:
+                updated_content = update_append_log_generic(content, data)
+                
             with open(self.file_path, "w", encoding="utf-8") as f:
                 f.write(updated_content)
                 
-            self.after_main(lambda: messagebox.showinfo("Success", "Successfully extracted and saved call counts to daily note!"))
+            self.after_main(lambda: messagebox.showinfo("Success", f"Successfully extracted and saved {self.template_name} data to note!"))
         except Exception as e:
-            self.after_main(lambda: messagebox.showerror("OCR Error", f"Failed to extract call logs: {e}"))
+            self.after_main(lambda: messagebox.showerror("OCR Error", f"Failed to extract {self.template_name} data: {e}"))
         finally:
             self.after_main(self.root.destroy)
             
@@ -357,11 +377,12 @@ class CallsLogger:
         self.root.after(0, fn)
 
 def main():
-    if len(sys.argv) < 2:
-        print("Usage: python log_calls.py <file_path>")
-        sys.exit(1)
-    file_path = sys.argv[1]
-    CallsLogger(file_path)
+    parser = argparse.ArgumentParser(description="Generic OCR Image log parsing script.")
+    parser.add_argument('--template-dir', required=True, help="Path to custom template configuration folder")
+    parser.add_argument('--file', required=True, help="Path to Daily Note markdown file to update")
+    
+    args = parser.parse_args()
+    OCRLogger(args.template_dir, args.file)
 
 if __name__ == "__main__":
     main()
