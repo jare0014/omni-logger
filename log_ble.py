@@ -67,17 +67,41 @@ class GenericBLEClient:
 
     async def connect(self, run_handshake=False):
         print(f"Connecting to BLE device {self.mac}...")
-        # Use async context manager so WinRT completes service discovery before
-        # any notify/read operations. Store the CM so we can exit it in disconnect.
-        self._cm = BleakClient(self.mac, timeout=20.0)
-        self.client = await self._cm.__aenter__()
-        print("Connected! Waiting for service discovery...")
-        await asyncio.sleep(2.0)  # Windows WinRT needs time to enumerate services
-        
+        # Windows WinRT can cache stale GATT sessions — retry up to 3 times,
+        # verifying is_connected after __aenter__ each time.
+        for attempt in range(1, 4):
+            settle = 1.5 + attempt * 0.5  # 2.0s, 2.5s, 3.0s
+            self._cm = BleakClient(self.mac, timeout=20.0)
+            try:
+                self.client = await self._cm.__aenter__()
+                await asyncio.sleep(settle)
+                if self.client.is_connected:
+                    print(f"Connected! (attempt {attempt}, settled {settle}s)")
+                    break
+                else:
+                    print(f"Attempt {attempt}: __aenter__ returned but is_connected=False, retrying...")
+                    await self._cm.__aexit__(None, None, None)
+                    self._cm = None
+                    self.client = None
+                    await asyncio.sleep(1.0)
+            except Exception as e:
+                print(f"Attempt {attempt} failed: {e}")
+                try:
+                    await self._cm.__aexit__(None, None, None)
+                except Exception:
+                    pass
+                self._cm = None
+                self.client = None
+                if attempt == 3:
+                    raise
+                await asyncio.sleep(2.0)
+        else:
+            raise Exception(f"Could not establish stable BLE connection to {self.mac} after 3 attempts.")
+
         if run_handshake:
             if not self.command_uuid or not self.response_uuid:
                 raise Exception("Command and Response UUIDs are required for Lorax handshake.")
-                
+
             print("Subscribing to notifications...")
             await self.client.start_notify(self.response_uuid, self.notification_handler)
 
@@ -119,6 +143,7 @@ class GenericBLEClient:
                 raise Exception(f"Unlock rejected (status={status})")
 
             print("Handshake authenticated and unlocked successfully!")
+
 
     async def read_lorax_path(self, path):
         seq = self.next_seq()
