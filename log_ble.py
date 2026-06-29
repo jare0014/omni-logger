@@ -67,10 +67,12 @@ class GenericBLEClient:
 
     async def connect(self, run_handshake=False):
         print(f"Connecting to BLE device {self.mac}...")
-        self.client = BleakClient(self.mac, timeout=12.0)
-        await self.client.connect()
-        print("Connected!")
-        await asyncio.sleep(1.0)
+        # Use async context manager so WinRT completes service discovery before
+        # any notify/read operations. Store the CM so we can exit it in disconnect.
+        self._cm = BleakClient(self.mac, timeout=20.0)
+        self.client = await self._cm.__aenter__()
+        print("Connected! Waiting for service discovery...")
+        await asyncio.sleep(2.0)  # Windows WinRT needs time to enumerate services
         
         if run_handshake:
             if not self.command_uuid or not self.response_uuid:
@@ -131,12 +133,14 @@ class GenericBLEClient:
         return await self.client.read_gatt_char(char_uuid)
 
     async def disconnect(self):
-        if self.client:
+        if hasattr(self, '_cm') and self._cm:
             print("Disconnecting BLE device...")
             try:
-                await self.client.disconnect()
+                await self._cm.__aexit__(None, None, None)
             except Exception as e:
                 print(f"Disconnect error: {e}")
+            self._cm = None
+            self.client = None
 
 def parse_val(raw_bytes, parser):
     if not raw_bytes:
