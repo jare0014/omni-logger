@@ -242,8 +242,10 @@ async def run_sync(template_dir, file_path, mock=False):
                         with open(file_path, "r", encoding="utf-8") as f:
                             txt = f.read()
                         m_db = re.search(rf"{re.escape(key)}:\s*\"?([^\n\"]+)\"?", txt)
-                        if m_db and m_db.group(1).strip():
-                            val = m_db.group(1).strip()
+                        existing = m_db.group(1).strip() if m_db else ""
+                        # Only preserve if it looks like a valid time (HH:MM)
+                        if existing and re.match(r"^\d{1,2}:\d{2}$", existing):
+                            val = existing
                     except Exception:
                         pass
                 results[key] = (val, dest)
@@ -258,6 +260,9 @@ async def run_sync(template_dir, file_path, mock=False):
             await client.connect(run_handshake=use_lorax)
             
             for metric in metrics:
+                # first_time_trigger metrics are computed in post-processing, skip BLE read
+                if metric.get("type") == "first_time_trigger":
+                    continue
                 name = metric.get("name", "Unknown")
                 parser = metric.get("parser", "hex")
                 
