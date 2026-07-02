@@ -26,7 +26,7 @@ if sys.platform == 'win32':
 
 # Add omni-logger path to sys.path to import writing helper utilities
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
-from google_health_pull import update_frontmatter, update_dataview_fields, append_to_bottom_log
+from health_utils import update_frontmatter, update_dataview_fields, append_to_bottom_log
 
 class GenericBLEClient:
     def __init__(self, mac, command_uuid=None, response_uuid=None, handshake_key_b64=None):
@@ -67,15 +67,41 @@ class GenericBLEClient:
 
     async def connect(self, run_handshake=False):
         print(f"Connecting to BLE device {self.mac}...")
-        self.client = BleakClient(self.mac, timeout=12.0)
-        await self.client.connect()
-        print("Connected!")
-        await asyncio.sleep(1.0)
-        
+        # Windows WinRT can cache stale GATT sessions — retry up to 3 times,
+        # verifying is_connected after __aenter__ each time.
+        for attempt in range(1, 4):
+            settle = 1.5 + attempt * 0.5  # 2.0s, 2.5s, 3.0s
+            self._cm = BleakClient(self.mac, timeout=20.0)
+            try:
+                self.client = await self._cm.__aenter__()
+                await asyncio.sleep(settle)
+                if self.client.is_connected:
+                    print(f"Connected! (attempt {attempt}, settled {settle}s)")
+                    break
+                else:
+                    print(f"Attempt {attempt}: __aenter__ returned but is_connected=False, retrying...")
+                    await self._cm.__aexit__(None, None, None)
+                    self._cm = None
+                    self.client = None
+                    await asyncio.sleep(1.0)
+            except Exception as e:
+                print(f"Attempt {attempt} failed: {e}")
+                try:
+                    await self._cm.__aexit__(None, None, None)
+                except Exception:
+                    pass
+                self._cm = None
+                self.client = None
+                if attempt == 3:
+                    raise
+                await asyncio.sleep(2.0)
+        else:
+            raise Exception(f"Could not establish stable BLE connection to {self.mac} after 3 attempts.")
+
         if run_handshake:
             if not self.command_uuid or not self.response_uuid:
                 raise Exception("Command and Response UUIDs are required for Lorax handshake.")
-                
+
             print("Subscribing to notifications...")
             await self.client.start_notify(self.response_uuid, self.notification_handler)
 
@@ -118,6 +144,7 @@ class GenericBLEClient:
 
             print("Handshake authenticated and unlocked successfully!")
 
+
     async def read_lorax_path(self, path):
         seq = self.next_seq()
         path_bytes = path.encode('ascii')
@@ -131,12 +158,14 @@ class GenericBLEClient:
         return await self.client.read_gatt_char(char_uuid)
 
     async def disconnect(self):
-        if self.client:
+        if hasattr(self, '_cm') and self._cm:
             print("Disconnecting BLE device...")
             try:
-                await self.client.disconnect()
+                await self._cm.__aexit__(None, None, None)
             except Exception as e:
                 print(f"Disconnect error: {e}")
+            self._cm = None
+            self.client = None
 
 def parse_val(raw_bytes, parser):
     if not raw_bytes:
@@ -165,11 +194,45 @@ async def run_sync(template_dir, file_path, mock=False):
         
     with open(metadata_path, "r", encoding="utf-8") as f:
         config = json.load(f)
+
+    # ── Device credential resolution ──────────────────────────────────────────
+    # If the template references a device by name, load credentials from the
+    # local bluetooth_devices/ registry (gitignored, never synced).
+    device_name = config.get("deviceName")
+    if device_name:
+        # Resolve plugin dir: two levels up from template_dir, then into
+        # .obsidian/plugins/omni-logger/bluetooth_devices/
+        # template_dir is typically <vault>/<ingredientsFolder>/<TemplateName>
+        # Walk up to find the plugin dir by looking for bluetooth_devices/ sibling
+        plugin_dir = os.path.join(
+            os.path.dirname(os.path.abspath(__file__))
+        )
+        devices_dir = os.path.join(plugin_dir, "bluetooth_devices")
+        device_file = os.path.join(devices_dir, f"{device_name}.json")
         
+        if not os.path.exists(device_file):
+            print(f"Error: Device '{device_name}' not found in bluetooth_devices/.")
+            print(f"  Expected: {device_file}")
+            print(f"  Use the Omni-Logger settings to pair the device first.")
+            sys.exit(1)
+            
+        with open(device_file, "r", encoding="utf-8") as f:
+            device_creds = json.load(f)
+            
+        # Merge device credentials into config
+        config["macAddress"] = device_creds.get("address", "")
+        config["useLoraxHandshake"] = device_creds.get("useLoraxHandshake", False)
+        config["commandUuid"] = device_creds.get("commandUuid", "")
+        config["responseUuid"] = device_creds.get("responseUuid", "")
+        config["handshakeKeyBase64"] = device_creds.get("handshakeKeyBase64", "")
+        print(f"Loaded device credentials for '{device_name}' from bluetooth_devices/.")
+    # ──────────────────────────────────────────────────────────────────────────
+
     mac = config.get("macAddress")
     if not mac:
         print("Error: macAddress missing in template configuration.")
         sys.exit(1)
+
         
     use_lorax = config.get("useLoraxHandshake", False)
     cmd_uuid = config.get("commandUuid")
@@ -195,7 +258,7 @@ async def run_sync(template_dir, file_path, mock=False):
                     try:
                         with open(file_path, "r", encoding="utf-8") as f:
                             txt = f.read()
-                        m_db = re.search(rf"{re.escape(key)}:\s*\"?(\d+)\"?", txt)
+                        m_db = re.search(rf"{re.escape(key)}:[ \t]*\"?(\d+)\"?", txt)
                         if m_db:
                             val = int(m_db.group(1)) + 5
                     except Exception as ex:
@@ -207,9 +270,11 @@ async def run_sync(template_dir, file_path, mock=False):
                     try:
                         with open(file_path, "r", encoding="utf-8") as f:
                             txt = f.read()
-                        m_db = re.search(rf"{re.escape(key)}:\s*\"?([^\n\"]+)\"?", txt)
-                        if m_db and m_db.group(1).strip():
-                            val = m_db.group(1).strip()
+                        m_db = re.search(rf"{re.escape(key)}:[ \t]*\"?([^\n\"]+)\"?", txt)
+                        existing = m_db.group(1).strip() if m_db else ""
+                        # Only preserve if it looks like a valid time (HH:MM)
+                        if existing and re.match(r"^\d{1,2}:\d{2}$", existing):
+                            val = existing
                     except Exception:
                         pass
                 results[key] = (val, dest)
@@ -224,6 +289,9 @@ async def run_sync(template_dir, file_path, mock=False):
             await client.connect(run_handshake=use_lorax)
             
             for metric in metrics:
+                # first_time_trigger metrics are computed in post-processing, skip BLE read
+                if metric.get("type") == "first_time_trigger":
+                    continue
                 name = metric.get("name", "Unknown")
                 parser = metric.get("parser", "hex")
                 
@@ -270,7 +338,7 @@ async def run_sync(template_dir, file_path, mock=False):
                                 if os.path.exists(yest_file):
                                     with open(yest_file, "r", encoding="utf-8") as f:
                                         yest_txt = f.read()
-                                    yest_odom_match = re.search(rf"{re.escape(odom_key)}:\s*\"?(\d+)\"?", yest_txt)
+                                    yest_odom_match = re.search(rf"{re.escape(odom_key)}:[ \t]*\"?(\d+)\"?", yest_txt)
                                     if yest_odom_match:
                                         yesterday_odom = int(yest_odom_match.group(1))
                         except Exception as ex:
@@ -282,7 +350,7 @@ async def run_sync(template_dir, file_path, mock=False):
                                 try:
                                     with open(file_path, "r", encoding="utf-8") as f:
                                         curr_txt = f.read()
-                                    m_val = re.search(rf"{re.escape(key)}:\s*\"?([^\n\"]+)\"?", curr_txt)
+                                    m_val = re.search(rf"{re.escape(key)}:[ \t]*\"?([^\n\"]+)\"?", curr_txt)
                                     if m_val and m_val.group(1).strip():
                                         is_empty = False
                                 except Exception:

@@ -10,3 +10,4 @@ data.json
 .venv/
 venv/
 local-settings.json
+bluetooth_devices/

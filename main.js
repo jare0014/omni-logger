@@ -931,6 +931,48 @@ class OmniLoggerPlugin extends obsidian.Plugin {
         }
     }
 
+    getBLEDevicesDir() {
+        const path = require('path');
+        return path.join(this.app.vault.adapter.getBasePath(), '.obsidian', 'plugins', 'omni-logger', 'bluetooth_devices');
+    }
+
+    listPairedDevices() {
+        const fs = require('fs');
+        const path = require('path');
+        const devDir = this.getBLEDevicesDir();
+        if (!fs.existsSync(devDir)) return [];
+        try {
+            return fs.readdirSync(devDir)
+                .filter(f => f.endsWith('.json'))
+                .map(f => {
+                    try {
+                        const data = JSON.parse(fs.readFileSync(path.join(devDir, f), 'utf8'));
+                        return data;
+                    } catch (e) { return null; }
+                })
+                .filter(Boolean);
+        } catch (e) {
+            console.error("[Omni-Logger] Failed to list bluetooth_devices/:", e);
+            return [];
+        }
+    }
+
+    savePairedDevice(deviceObj) {
+        const fs = require('fs');
+        const path = require('path');
+        const devDir = this.getBLEDevicesDir();
+        fs.mkdirSync(devDir, { recursive: true });
+        const fileName = `${deviceObj.name}.json`;
+        fs.writeFileSync(path.join(devDir, fileName), JSON.stringify(deviceObj, null, 2), 'utf8');
+    }
+
+    removePairedDevice(deviceName) {
+        const fs = require('fs');
+        const path = require('path');
+        const filePath = path.join(this.getBLEDevicesDir(), `${deviceName}.json`);
+        if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
+    }
+
     async getSecret(secretId, fallbackSettingKey) {
         const fs = require('fs');
         const vaultPath = this.app.vault.adapter.getBasePath();
@@ -2841,47 +2883,122 @@ class OmniLoggerSettingTab extends obsidian.PluginSettingTab {
                     await this.plugin.saveLocalSettings();
                 }));
 
+        // ── Paired Devices section ────────────────────────────────────────────
+        customLogsDetailsContainer.createEl('h4', { text: 'Paired Bluetooth Devices', style: 'margin-top:16px; margin-bottom:4px;' });
+        customLogsDetailsContainer.createEl('p', {
+            text: 'Device credentials (MAC address, handshake key) are stored locally in bluetooth_devices/ and are never synced or committed to git.',
+            cls: 'setting-item-description',
+            style: 'margin-bottom:10px;'
+        });
+
+        const bleDeviceRow = customLogsDetailsContainer.createDiv({ style: 'display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-bottom:8px;' });
+
+        const bleDeviceSelect = bleDeviceRow.createEl('select', { style: 'flex:1; min-width:160px;' });
+        const refreshDeviceDropdown = () => {
+            bleDeviceSelect.empty();
+            const devices = this.plugin.listPairedDevices();
+            if (devices.length === 0) {
+                bleDeviceSelect.createEl('option', { value: '', text: '— No paired devices —' });
+            } else {
+                bleDeviceSelect.createEl('option', { value: '', text: '— Select a device —' });
+                devices.forEach(d => bleDeviceSelect.createEl('option', { value: d.name, text: `${d.name}  (${d.address})` }));
+            }
+        };
+        refreshDeviceDropdown();
+
+        const removeDeviceBtn = bleDeviceRow.createEl('button', { text: 'Remove', cls: 'mod-warning' });
+        removeDeviceBtn.onclick = () => {
+            const sel = bleDeviceSelect.value;
+            if (!sel) { new obsidian.Notice('Select a device to remove.'); return; }
+            this.plugin.removePairedDevice(sel);
+            refreshDeviceDropdown();
+            new obsidian.Notice(`Removed device "${sel}".`);
+        };
+
         new obsidian.Setting(customLogsDetailsContainer)
-            .setName('Scan BLE Devices')
-            .setDesc('Scan for visible Bluetooth Low Energy devices nearby.')
+            .setName('Scan & Pair New Device')
+            .setDesc('Scan for nearby BLE devices and save one to the local registry.')
             .addButton(btn => btn
                 .setButtonText('Scan Now')
                 .onClick(async () => {
                     btn.setButtonText('Scanning...');
-                    new obsidian.Notice("Starting Bluetooth scan...");
+                    btn.disabled = true;
                     const child_process = require('child_process');
                     const path = require('path');
+                    const fs = require('fs');
                     const vaultPath = this.plugin.app.vault.adapter.getBasePath();
-                    const sep = vaultPath.includes('/') ? '/' : '\\';
-                    const pluginDir = `${vaultPath}${sep}.obsidian${sep}plugins${sep}omni-logger`;
+                    const pluginDir = path.join(vaultPath, '.obsidian', 'plugins', 'omni-logger');
                     const venvPython = require('os').platform() === 'win32'
                         ? path.join(pluginDir, '.venv', 'Scripts', 'python.exe')
                         : path.join(pluginDir, '.venv', 'bin', 'python');
-                    const pythonCmd = require('fs').existsSync(venvPython) ? `"${venvPython}"` : 'python';
-                    const scriptPath = `${pluginDir}${sep}ble_scan.py`;
-                    
+                    const pythonCmd = fs.existsSync(venvPython) ? `"${venvPython}"` : 'python';
+                    const scriptPath = path.join(pluginDir, 'ble_scan.py');
+
                     child_process.exec(`${pythonCmd} "${scriptPath}"`, (err, stdout, stderr) => {
                         btn.setButtonText('Scan Now');
-                        if (err) {
-                            new obsidian.Notice("Scan failed: " + (stderr || err.message));
-                            return;
-                        }
-                        try {
-                            const devices = JSON.parse(stdout.trim());
-                            if (devices.error) {
-                                new obsidian.Notice("Scan failed: " + devices.error);
-                            } else if (devices.length === 0) {
-                                new obsidian.Notice("No BLE devices found nearby.");
-                            } else {
-                                const listStr = devices.map(d => `• ${d.name} (${d.address})`).join('\n');
-                                new obsidian.Notice(`Found BLE Devices:\n\n${listStr}`, 10000);
-                            }
-                        } catch (e) {
-                            new obsidian.Notice("Failed to parse scan output: " + stdout);
-                        }
+                        btn.disabled = false;
+                        if (err) { new obsidian.Notice('Scan failed: ' + (stderr || err.message)); return; }
+                        let foundDevices;
+                        try { foundDevices = JSON.parse(stdout.trim()); } catch (e) { new obsidian.Notice('Failed to parse scan output.'); return; }
+                        if (foundDevices.error) { new obsidian.Notice('Scan failed: ' + foundDevices.error); return; }
+                        if (!foundDevices.length) { new obsidian.Notice('No BLE devices found nearby.'); return; }
+
+                        // ── Pair modal ──────────────────────────────────────
+                        const modal = new obsidian.Modal(this.plugin.app);
+                        modal.titleEl.setText('Pair BLE Device');
+                        const { contentEl } = modal;
+                        contentEl.style.padding = '16px';
+
+                        contentEl.createEl('p', { text: 'Select the discovered device to pair:', style: 'margin-bottom:8px; font-weight:600;' });
+                        const devSelect = contentEl.createEl('select', { style: 'width:100%; margin-bottom:12px;' });
+                        foundDevices.forEach(d => devSelect.createEl('option', { value: d.address, text: `${d.name || 'Unknown'}  (${d.address})` }));
+
+                        contentEl.createEl('label', { text: 'Friendly name (used to link templates):' });
+                        const nameInput = contentEl.createEl('input', { type: 'text', style: 'width:100%; margin-bottom:12px; margin-top:4px;' });
+                        nameInput.value = foundDevices[0]?.name || '';
+                        devSelect.onchange = () => {
+                            const sel = foundDevices.find(d => d.address === devSelect.value);
+                            if (sel && !nameInput.value) nameInput.value = sel.name || '';
+                        };
+
+                        const advToggle = contentEl.createEl('details', { style: 'margin-bottom:12px;' });
+                        advToggle.createEl('summary', { text: 'Advanced: Lorax handshake (optional)', style: 'cursor:pointer; font-size:0.9em;' });
+                        const advBody = advToggle.createDiv({ style: 'padding:8px 0;' });
+                        const loraxCheck = advBody.createEl('input', { type: 'checkbox' });
+                        advBody.createSpan({ text: ' Use Lorax handshake', style: 'margin-left:6px;' });
+                        advBody.createEl('br');
+
+                        advBody.createEl('label', { text: 'Command UUID:', style: 'font-size:0.85em;' });
+                        const cmdUuidInput = advBody.createEl('input', { type: 'text', style: 'width:100%; margin-bottom:6px; font-size:0.85em;' });
+                        advBody.createEl('label', { text: 'Response UUID:', style: 'font-size:0.85em;' });
+                        const respUuidInput = advBody.createEl('input', { type: 'text', style: 'width:100%; margin-bottom:6px; font-size:0.85em;' });
+                        advBody.createEl('label', { text: 'Handshake Key (Base64):', style: 'font-size:0.85em;' });
+                        const keyInput = advBody.createEl('input', { type: 'password', style: 'width:100%; font-size:0.85em;' });
+
+                        const pairBtn = contentEl.createEl('button', { text: 'Save to Paired Devices', cls: 'mod-cta', style: 'margin-top:12px; width:100%;' });
+                        pairBtn.onclick = () => {
+                            const friendlyName = nameInput.value.trim();
+                            if (!friendlyName) { new obsidian.Notice('Please enter a friendly name.'); return; }
+                            const deviceObj = {
+                                name: friendlyName,
+                                address: devSelect.value,
+                                useLoraxHandshake: loraxCheck.checked,
+                                commandUuid: cmdUuidInput.value.trim(),
+                                responseUuid: respUuidInput.value.trim(),
+                                handshakeKeyBase64: keyInput.value.trim()
+                            };
+                            this.plugin.savePairedDevice(deviceObj);
+                            refreshDeviceDropdown();
+                            new obsidian.Notice(`Device "${friendlyName}" paired and saved!`);
+                            modal.close();
+                        };
+                        modal.open();
+                        // ───────────────────────────────────────────────────
                     });
                 })
             );
+        // ─────────────────────────────────────────────────────────────────────
+
 
         const templatesContainer = customLogsDetailsContainer.createDiv();
         const renderTemplates = () => {
@@ -2931,18 +3048,36 @@ class OmniLoggerSettingTab extends obsidian.PluginSettingTab {
                     
                     let configArea;
                     if (t.mode === 'ble') {
+                        // ── Device picker ──────────────────────────────────
+                        const deviceRow = itemDiv.createDiv({ style: 'display:flex; gap:8px; align-items:center; margin-top:10px; margin-bottom:8px;' });
+                        deviceRow.createSpan({ text: 'Device:', style: 'font-weight:600; min-width:60px;' });
+                        const templateDeviceSelect = deviceRow.createEl('select', { style: 'flex:1;' });
+                        
+                        const repopulateDeviceSelect = () => {
+                            templateDeviceSelect.empty();
+                            const pairedDevices = this.plugin.listPairedDevices();
+                            templateDeviceSelect.createEl('option', { value: '', text: '— Select paired device —' });
+                            pairedDevices.forEach(d => templateDeviceSelect.createEl('option', { value: d.name, text: `${d.name}  (${d.address})` }));
+                            templateDeviceSelect.value = t.deviceName || '';
+                        };
+                        repopulateDeviceSelect();
+                        templateDeviceSelect.onchange = () => { t.deviceName = templateDeviceSelect.value; };
+
+                        if (!this.plugin.listPairedDevices().length) {
+                            deviceRow.createSpan({ text: 'No paired devices — pair one in Settings above.', style: 'color:var(--text-muted); font-size:0.85em;' });
+                        }
+
+                        // Metrics JSON (safe to sync — no credentials)
+                        itemDiv.createEl('p', { text: 'Metrics config (no credentials stored here):', style: 'margin:8px 0 4px; font-size:0.85em; color:var(--text-muted);' });
                         configArea = itemDiv.createEl('textarea');
                         configArea.style.width = '100%';
-                        configArea.style.marginTop = '10px';
-                        configArea.style.height = '180px';
+                        configArea.style.marginTop = '4px';
+                        configArea.style.height = '160px';
                         configArea.style.fontFamily = 'monospace';
                         
-                        const bleConfig = Object.assign({}, t);
-                        delete bleConfig.prompt;
-                        delete bleConfig.instructions;
-                        delete bleConfig.exampleInput;
-                        delete bleConfig.targetAppearance;
-                        configArea.value = JSON.stringify(bleConfig, null, 2);
+                        const safeConfig = { id: t.id, name: t.name, mode: t.mode, destination: t.destination, deviceName: t.deviceName || '', metrics: t.metrics || [] };
+                        configArea.value = JSON.stringify(safeConfig, null, 2);
+                        // ──────────────────────────────────────────────────
 
                         const syncStyleContainer = itemDiv.createDiv();
                         syncStyleContainer.style.marginTop = '10px';
@@ -3095,17 +3230,16 @@ class OmniLoggerSettingTab extends obsidian.PluginSettingTab {
                                 t.destination = destSelect.value;
                                 t.syncStyle = styleSelect.value;
                                 t.syncInterval = parseInt(intervalInput.value) || 15;
+                                // Use the device picker value if it was changed
+                                if (templateDeviceSelect.value) t.deviceName = templateDeviceSelect.value;
                                 
+                                // Write only credential-free fields to the synced metadata
                                 const cleanMeta = {
                                     id: t.id,
                                     name: t.name,
                                     mode: t.mode,
                                     destination: t.destination,
-                                    macAddress: t.macAddress,
-                                    useLoraxHandshake: t.useLoraxHandshake,
-                                    commandUuid: t.commandUuid,
-                                    responseUuid: t.responseUuid,
-                                    handshakeKeyBase64: t.handshakeKeyBase64,
+                                    deviceName: t.deviceName || '',
                                     metrics: t.metrics,
                                     syncStyle: t.syncStyle,
                                     syncInterval: t.syncInterval
@@ -3516,15 +3650,20 @@ class OmniTemplateCreatorModal extends obsidian.Modal {
 
         const bleContainer = document.createElement('div');
         bleContainer.className = 'omni-ble-creator-container';
-        bleContainer.createEl('p', { text: 'Configure default BLE fields for the new template.' });
-        
-        const macSetting = new obsidian.Setting(bleContainer)
-            .setName('Device MAC Address')
-            .setDesc('Enter the target BLE MAC address (e.g. 84:71:27:56:30:07). Use the Settings scan tool to discover it.')
-            .addText(text => text
-                .setPlaceholder('AA:BB:CC:DD:EE:FF')
-                .onChange(val => this.macAddress = val.trim())
-            );
+        bleContainer.createEl('p', { text: 'Select a paired device for this BLE template. Credentials are stored in bluetooth_devices/ (local only).' });
+
+        const bleCreatorRow = bleContainer.createDiv({ style: 'display:flex; gap:8px; align-items:center; margin:8px 0;' });
+        bleCreatorRow.createSpan({ text: 'Device:', style: 'font-weight:600; min-width:60px;' });
+        const creatorDeviceSelect = bleCreatorRow.createEl('select', { style: 'flex:1;' });
+        const creatorDevices = this.plugin.listPairedDevices();
+        if (creatorDevices.length === 0) {
+            creatorDeviceSelect.createEl('option', { value: '', text: '— No paired devices — pair one in Settings first —' });
+        } else {
+            creatorDeviceSelect.createEl('option', { value: '', text: '— Select paired device —' });
+            creatorDevices.forEach(d => creatorDeviceSelect.createEl('option', { value: d.name, text: `${d.name}  (${d.address})` }));
+        }
+        creatorDeviceSelect.onchange = () => { this.selectedDeviceName = creatorDeviceSelect.value; };
+        this.selectedDeviceName = '';
 
         const updateInputSection = () => {
             inputSection.empty();
@@ -3653,16 +3792,16 @@ class OmniTemplateCreatorModal extends obsidian.Modal {
             }
             let newTemplate;
             if (this.mode === 'ble') {
+                if (!this.selectedDeviceName) {
+                    new obsidian.Notice('Please select a paired device. Pair one in Settings → Custom Logs first.');
+                    return;
+                }
                 newTemplate = {
                     id: 'custom-ble-' + Date.now(),
                     name: this.name,
                     mode: 'ble',
                     destination: this.destination,
-                    macAddress: this.macAddress || "00:00:00:00:00:00",
-                    useLoraxHandshake: false,
-                    commandUuid: "",
-                    responseUuid: "",
-                    handshakeKeyBase64: "",
+                    deviceName: this.selectedDeviceName,
                     metrics: [
                         {
                             name: "Battery Level",

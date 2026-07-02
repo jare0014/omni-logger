@@ -62,7 +62,11 @@ def post_food_to_api(food_id, amount, registry_path=None):
         
         if health_type == "nutrition":
             nutrients_list = []
+            calories = 0.0
             for k, v in nutrients.items():
+                if k.lower() in ["energy", "calories"]:
+                    calories = float(v * amount)
+                    continue
                 nutrients_list.append({
                     "nutrient": k.upper(),
                     "quantity": {
@@ -70,13 +74,19 @@ def post_food_to_api(food_id, amount, registry_path=None):
                     }
                 })
                 
-            payload = {
-                "nutritionLog": {
-                    "interval": interval,
-                    "foodDisplayName": food_name,
-                    "nutrients": nutrients_list,
-                    "mealType": "SNACK"
+            nutrition_log = {
+                "interval": interval,
+                "foodDisplayName": food_name,
+                "nutrients": nutrients_list,
+                "mealType": "SNACK"
+            }
+            if calories > 0:
+                nutrition_log["energy"] = {
+                    "kcal": calories
                 }
+                
+            payload = {
+                "nutritionLog": nutrition_log
             }
             url = "https://health.googleapis.com/v4/users/me/dataTypes/nutrition-log/dataPoints"
         elif health_type == "alcohol_consumption":
