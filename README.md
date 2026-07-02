@@ -14,6 +14,7 @@ It supports pulling sleep, HRV, caffeine, alcohol, hydration, protein, and calor
 *   **Flexible Metadata Destinations:** Sync health variables directly to frontmatter YAML properties, inline Dataview fields, or appended bottom logs.
 *   **Multimodal OCR Screenshot Ingestion:** Grab clipboard images (e.g. from `Win+Shift+S`) or drag-and-drop captures to automatically parse and log call statistics, focus intervals, or brain-training (Lumosity) scores.
 *   **Flexible LLM Provider Routing:** Run parsing locally using **Ollama** (offline, no API key required) or scale via **Google Gemini**.
+*   **Local Git Commit Logging Integration:** Automatically aggregates native `git log` commit history across multiple local repositories in the background, logging daily progress without blocking the main Electron UI.
 
 ---
 
