@@ -11,3 +11,8 @@ data.json
 venv/
 local-settings.json
 bluetooth_devices/
+
+# Ignore chatbot discussions
+Chatbot Discussions/
+**/Chatbot Discussions/
+
