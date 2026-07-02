@@ -34,7 +34,17 @@ const DEFAULT_SETTINGS = {
     googleHealthSleepPrompt: 'Examine the raw Google Fitness API JSON payload representing my sleep sessions for today. Extract the longest sleep session and calculate the total sleep duration in hours and minutes. Your output MUST be a valid JSON object with keys like "Sleep" and "Wakeup". Do not wrap in markdown blocks. Example: { "Sleep": "7h 30m", "Wakeup": "07:00 AM" }',
     googleHealthVitalsPrompt: 'Examine the raw Google Fitness API JSON payload representing heart rate variability (HRV) for today. Extract the RMSSD or equivalent metric. Your output MUST be a valid JSON object with keys like "HRV". Example: { "HRV": 55 }',
     googleHealthNutritionPrompt: 'Examine the raw Google Fitness API JSON payload representing my food logs for today. Summarize caffeine (mg), alcohol (g), protein (g), and calories (kcal). Your output MUST be a valid JSON object with keys like "caffeine", "alcohol", "protein", "calories". Example: { "caffeine": 95, "alcohol": 0, "protein": 30, "calories": 160 }',
-    googleHealthHydrationPrompt: 'Examine the raw Google Fitness API JSON payload representing hydration. Summarize total water intake in milliliters. Your output MUST be a valid JSON object with keys like "hydration". Example: { "hydration": 750 }'
+    googleHealthHydrationPrompt: 'Examine the raw Google Fitness API JSON payload representing hydration. Summarize total water intake in milliliters. Your output MUST be a valid JSON object with keys like "hydration". Example: { "hydration": 750 }',
+    gitRepoPaths: [
+        "c:\\Users\\jare0\\Documents\\Obsidian",
+        "c:\\Users\\jare0\\Documents\\Obsidian\\04_Projects\\Quant",
+        "c:\\Users\\jare0\\Documents\\Obsidian\\04_Projects\\chaos-dashboard",
+        "c:\\Users\\jare0\\Documents\\Obsidian\\04_Projects\\omni-logger",
+        "c:\\Users\\jare0\\Documents\\Obsidian\\04_Projects\\schedule-assistant-focus-timer",
+        "c:\\Users\\jare0\\Documents\\Obsidian\\04_Projects\\knowledge-pipeline"
+    ].join('\n'),
+    gitAuthor: "",
+    gitTargetHeading: "## 🪵 Log"
 };
 
 
@@ -97,6 +107,17 @@ class OmniLoggerPlugin extends obsidian.Plugin {
             callback: () => {
                 new OmniLoggerModal(this.app, this).open();
             }
+        });
+
+        // Add Git Logging commands absorbed from git-logger
+        this.addCommand({
+            id: 'log-today-git-history',
+            name: 'Log Today\'s Git History',
+            callback: () => this.logGitHistory(),
+        });
+
+        this.addRibbonIcon('git-branch', 'Log Git Activity', () => {
+            this.logGitHistory();
         });
 
         // Register Command to Sync Google Health Data
@@ -2148,7 +2169,236 @@ Return your response strictly as a JSON object matching this schema:
                 console.log(`Ingest output: ${stdout}`);
                 new obsidian.Notice("HL7 Batch Ingestion Completed successfully!");
             }
+    }
+
+    getLocalDateString() {
+        const now = new Date();
+        const y = now.getFullYear();
+        const m = String(now.getMonth() + 1).padStart(2, '0');
+        const d = String(now.getDate()).padStart(2, '0');
+        return `${y}-${m}-${d}`;
+    }
+
+    runGitLog(repoPath, date, authorFilter) {
+        const fs = require('fs');
+        const path = require('path');
+        const { exec } = require('child_process');
+        return new Promise((resolve) => {
+            const resolvedPath = path.resolve(repoPath.trim());
+            if (!fs.existsSync(resolvedPath)) {
+                return resolve({ repoPath: resolvedPath, error: "Directory path does not exist" });
+            }
+
+            // Command formats details as hash|time|author|message
+            let cmd = `git log --since="${date} 00:00:00" --until="${date} 23:59:59" --pretty=format:"%h|%ad|%an|%s" --date=format:"%H:%M"`;
+            if (authorFilter) {
+                cmd += ` --author="${authorFilter.replace(/"/g, '\\"')}"`;
+            }
+            cmd += ` -- .`;
+
+            exec(cmd, { cwd: resolvedPath }, (error, stdout, stderr) => {
+                if (error) {
+                    if (stderr.includes("not a git repository")) {
+                        return resolve({ repoPath: resolvedPath, error: "Not a Git repository" });
+                    }
+                    return resolve({ repoPath: resolvedPath, error: stderr.trim() || error.message });
+                }
+                resolve({ repoPath: resolvedPath, stdout: stdout.trim() });
+            });
         });
+    }
+
+    async logGitHistory() {
+        const path = require('path');
+        const activeFile = this.app.workspace.getActiveFile();
+        if (!activeFile) {
+            new obsidian.Notice("No active file. Please open a note first.");
+            return;
+        }
+
+        // Detect date from active file name if format is YYYY-MM-DD.md
+        let date = this.getLocalDateString();
+        const dateMatch = activeFile.name.match(/^(\d{4}-\d{2}-\d{2})\.md$/);
+        if (dateMatch) {
+            date = dateMatch[1];
+        }
+
+        const repoList = this.settings.gitRepoPaths
+            .split('\n')
+            .map(p => p.trim())
+            .filter(p => p.length > 0);
+
+        if (repoList.length === 0) {
+            new obsidian.Notice("No repositories configured in settings.");
+            return;
+        }
+
+        new obsidian.Notice(`Fetching git activity for ${date}...`);
+
+        const results = await Promise.all(
+            repoList.map(repo => this.runGitLog(repo, date, this.settings.gitAuthor))
+        );
+
+        // Collect new commits grouped by repo name
+        const newCommitsByRepo = new Map();
+        let errors = [];
+
+        results.forEach(res => {
+            if (res.error) {
+                errors.push(`${path.basename(res.repoPath)}: ${res.error}`);
+                return;
+            }
+
+            if (!res.stdout) {
+                return;
+            }
+
+            const repoName = path.basename(res.repoPath);
+            const commits = res.stdout.split('\n').filter(l => l.trim().length > 0);
+
+            if (commits.length > 0) {
+                if (!newCommitsByRepo.has(repoName)) {
+                    newCommitsByRepo.set(repoName, []);
+                }
+                const existing = newCommitsByRepo.get(repoName);
+                const existingHashes = new Set(existing.map(c => c.hash));
+                commits.forEach(commitLine => {
+                    const [hash, time, author, msg] = commitLine.split('|');
+                    // Deduplicate across paths that resolve to the same repo name
+                    if (!existingHashes.has(hash)) {
+                        existingHashes.add(hash);
+                        existing.push({ hash, time, author, msg });
+                    }
+                });
+            }
+        });
+
+        if (errors.length > 0) {
+            console.warn("Git Logger errors:", errors);
+        }
+
+        const startMarker = '<!--START_Antigravity_Git_Log-->';
+        const endMarker = '<!--END_Antigravity_Git_Log-->';
+
+        // Read active file content and parse any existing git log block
+        try {
+            const content = await this.app.vault.read(activeFile);
+            const lines = content.split('\n');
+
+            let startIndex = -1;
+            let endIndex = -1;
+
+            for (let i = 0; i < lines.length; i++) {
+                if (lines[i].includes(startMarker)) {
+                    startIndex = i;
+                }
+                if (lines[i].includes(endMarker)) {
+                    endIndex = i;
+                    break;
+                }
+            }
+
+            // Parse existing entries from the block (if any) so we can merge
+            const mergedByRepo = new Map();
+
+            if (startIndex !== -1 && endIndex !== -1) {
+                let currentRepo = null;
+                for (let i = startIndex; i <= endIndex; i++) {
+                    const repoMatch = lines[i].match(/^\*\*(.+)\*\*$/);
+                    if (repoMatch) {
+                        currentRepo = repoMatch[1];
+                        if (!mergedByRepo.has(currentRepo)) {
+                            mergedByRepo.set(currentRepo, []);
+                        }
+                        continue;
+                    }
+                    const commitMatch = lines[i].match(/^- `([a-f0-9]+)` \*\*(.+?)\*\* \(\*(.+?)\*\) — (.+)$/);
+                    if (commitMatch && currentRepo) {
+                        mergedByRepo.get(currentRepo).push({
+                            hash: commitMatch[1],
+                            time: commitMatch[2],
+                            author: commitMatch[3],
+                            msg: commitMatch[4]
+                        });
+                    }
+                }
+            }
+
+            // Merge new commits into existing, deduplicating by hash
+            let newCommitsAdded = 0;
+            for (const [repoName, commits] of newCommitsByRepo) {
+                if (!mergedByRepo.has(repoName)) {
+                    mergedByRepo.set(repoName, []);
+                }
+                const repoEntries = mergedByRepo.get(repoName);
+                const existingHashes = new Set(repoEntries.map(c => c.hash));
+                for (const commit of commits) {
+                    if (!existingHashes.has(commit.hash)) {
+                        repoEntries.push(commit);
+                        newCommitsAdded++;
+                    }
+                }
+                // Sort entries by time within each repo
+                repoEntries.sort((a, b) => a.time.localeCompare(b.time));
+            }
+
+            // Build the merged markdown block
+            const totalCommits = Array.from(mergedByRepo.values()).reduce((sum, arr) => sum + arr.length, 0);
+            let markdownLogs = [];
+            for (const [repoName, commits] of mergedByRepo) {
+                if (commits.length > 0) {
+                    markdownLogs.push(`**${repoName}**`);
+                    commits.forEach(c => {
+                        markdownLogs.push(`- \`${c.hash}\` **${c.time}** (*${c.author}*) — ${c.msg}`);
+                    });
+                    markdownLogs.push("");
+                }
+            }
+
+            let formattedLog = "";
+            if (totalCommits > 0) {
+                formattedLog = `${startMarker}\n### 🐙 Git Activity (${date})\n\n${markdownLogs.join('\n').trim()}\n${endMarker}`;
+            } else {
+                formattedLog = `${startMarker}\n### 🐙 Git Activity (${date})\n*No commits logged for today.*\n${endMarker}`;
+            }
+
+            if (startIndex !== -1 && endIndex !== -1) {
+                // Merge-replace the existing block
+                lines.splice(startIndex, endIndex - startIndex + 1, formattedLog);
+            } else {
+                // Find target heading
+                let headingIndex = -1;
+                for (let i = 0; i < lines.length; i++) {
+                    if (lines[i].includes(this.settings.gitTargetHeading)) {
+                        headingIndex = i;
+                        break;
+                    }
+                }
+
+                if (headingIndex !== -1) {
+                    // Find the end of the target heading section (stop before next header or end of file)
+                    let insertIndex = headingIndex + 1;
+                    while (insertIndex < lines.length) {
+                        if (lines[insertIndex].startsWith('#')) {
+                            break;
+                        }
+                        insertIndex++;
+                    }
+
+                    // Insert the log block. Ensure there's a clean line separator if necessary.
+                    lines.splice(insertIndex, 0, "", formattedLog);
+                } else {
+                    // Append section to the end of the file if heading doesn't exist
+                    lines.push("", this.settings.gitTargetHeading, "", formattedLog);
+                }
+            }
+
+            await this.app.vault.modify(activeFile, lines.join('\n'));
+            new obsidian.Notice(`Logged ${totalCommits} total commits (${newCommitsAdded} new) to Daily Note.`);
+        } catch (e) {
+            console.error("Failed to write to daily note:", e);
+            new obsidian.Notice("Failed to update Daily Note: " + e.message);
+        }
     }
 }
 
@@ -3299,6 +3549,60 @@ class OmniLoggerSettingTab extends obsidian.PluginSettingTab {
                 renderTemplates();
             }).open();
         };
+
+        // ==========================================
+        // 5. GIT LOGGER INTEGRATION (Collapsible)
+        // ==========================================
+        const gitLoggerDetails = containerEl.createEl('details');
+        gitLoggerDetails.style.marginBottom = '20px';
+        gitLoggerDetails.style.border = '1px solid var(--background-modifier-border)';
+        gitLoggerDetails.style.borderRadius = '6px';
+        gitLoggerDetails.style.padding = '8px';
+        
+        const gitLoggerSummary = gitLoggerDetails.createEl('summary', { text: '🐙 Git Activity Logger' });
+        gitLoggerSummary.style.cursor = 'pointer';
+        gitLoggerSummary.style.fontSize = '1.2em';
+        gitLoggerSummary.style.fontWeight = 'bold';
+        gitLoggerSummary.style.color = 'var(--text-accent)';
+        
+        const gitLoggerDetailsContainer = gitLoggerDetails.createDiv();
+        gitLoggerDetailsContainer.style.paddingTop = '10px';
+        
+        new obsidian.Setting(gitLoggerDetailsContainer)
+            .setName('Repository Paths')
+            .setDesc('Enter the absolute folder paths of the git repositories you want to track, one path per line.')
+            .addTextArea(text => {
+                text.setPlaceholder('C:\\path\\to\\repo1\nC:\\path\\to\\repo2')
+                    .setValue(this.plugin.settings.gitRepoPaths || '')
+                    .onChange(async (value) => {
+                        this.plugin.settings.gitRepoPaths = value;
+                        await this.plugin.saveSettings();
+                    });
+                text.inputEl.rows = 6;
+                text.inputEl.style.width = '100%';
+            });
+
+        new obsidian.Setting(gitLoggerDetailsContainer)
+            .setName('Git Author Filter')
+            .setDesc('Only track commits by this author (optional, leave empty to track all commits).')
+            .addText(text => text
+                .setPlaceholder('e.g., John Doe')
+                .setValue(this.plugin.settings.gitAuthor || '')
+                .onChange(async (value) => {
+                    this.plugin.settings.gitAuthor = value.trim();
+                    await this.plugin.saveSettings();
+                }));
+
+        new obsidian.Setting(gitLoggerDetailsContainer)
+            .setName('Log Section Heading')
+            .setDesc('The heading in your daily note under which the Git Activity section will be placed.')
+            .addText(text => text
+                .setPlaceholder('## 🪵 Log')
+                .setValue(this.plugin.settings.gitTargetHeading || '## 🪵 Log')
+                .onChange(async (value) => {
+                    this.plugin.settings.gitTargetHeading = value.trim();
+                    await this.plugin.saveSettings();
+                }));
     }
 }
 class OmniLoggerModal extends obsidian.Modal {
