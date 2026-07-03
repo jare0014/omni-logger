@@ -44,7 +44,8 @@ const DEFAULT_SETTINGS = {
         "c:\\Users\\jare0\\Documents\\Obsidian\\04_Projects\\knowledge-pipeline"
     ].join('\n'),
     gitAuthor: "",
-    gitTargetHeading: "## 🪵 Log"
+    gitTargetHeading: "## 🪵 Log",
+    autoSyncOnStartup: false
 };
 
 
@@ -236,10 +237,20 @@ class OmniLoggerPlugin extends obsidian.Plugin {
                         }
                     }, 50);
                     return result;
-                };
-                setting.open.__antigravityHooked = true;
-                setting.open.__originalOpen = originalOpen;
             }
+        }
+
+        // Auto-sync on startup if enabled and API configuration is set
+        if (this.settings.autoSyncOnStartup && this.settings.dataSourceApi === 'google-health') {
+            this.app.workspace.onLayoutReady(async () => {
+                try {
+                    console.log("Omni-Logger: Performing auto-sync on startup...");
+                    await this.pullGoogleHealthData();
+                    console.log("Omni-Logger: Auto-sync completed successfully.");
+                } catch (e) {
+                    console.warn("Omni-Logger: Startup auto-sync failed:", e);
+                }
+            });
         }
     }
 
@@ -2467,6 +2478,16 @@ class OmniLoggerSettingTab extends obsidian.PluginSettingTab {
                     this.plugin.settings.dataSourceApi = value ? 'google-health' : 'none';
                     await this.plugin.saveSettings();
                     this.display();
+                }));
+
+        new obsidian.Setting(googleHealthDetailsContainer)
+            .setName('Auto-Sync on Startup')
+            .setDesc('Automatically pull non-OCR telemetry (Google Health / Fitbit APIs) when Obsidian loads.')
+            .addToggle(toggle => toggle
+                .setValue(this.plugin.settings.autoSyncOnStartup || false)
+                .onChange(async (value) => {
+                    this.plugin.settings.autoSyncOnStartup = value;
+                    await this.plugin.saveSettings();
                 }));
 
         if (this.plugin.settings.dataSourceApi === 'google-health') {
