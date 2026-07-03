@@ -9,6 +9,8 @@ It supports pulling sleep, HRV, caffeine, alcohol, hydration, protein, and calor
 ## 🚀 Key Features
 
 *   **Google Health API v4 Sync:** Automatically queries Google Health REST endpoints to synchronize sleep, HRV, and nutrition biometrics.
+*   **Auto-Sync on Startup:** Automatically checks and pulls your non-OCR telemetry (Google Health / Fitbit APIs) when Obsidian loads, with configurable settings.
+*   **Bluetooth/BLE Device Wizard:** Interactive pairing and setup interface to discover, authenticate, and pair local Bluetooth Low Energy (BLE) devices using `Bleak`, allowing secure handshakes and logging of biometrics.
 *   **Decoupled Database Model:** Writes to Google Health as the single source of truth; synchronization pulls health values into your daily notes dynamically based on your custom destination configuration.
 *   **Food Ingestion & Registry Wizard:** Interactive UI command to log meals directly to Google Health and easily add/register custom foods to your database.
 *   **Flexible Metadata Destinations:** Sync health variables directly to frontmatter YAML properties, inline Dataview fields, or appended bottom logs.
