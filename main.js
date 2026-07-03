@@ -237,6 +237,9 @@ class OmniLoggerPlugin extends obsidian.Plugin {
                         }
                     }, 50);
                     return result;
+                };
+                setting.open.__antigravityHooked = true;
+                setting.open.__originalOpen = originalOpen;
             }
         }
 
@@ -2180,6 +2183,7 @@ Return your response strictly as a JSON object matching this schema:
                 console.log(`Ingest output: ${stdout}`);
                 new obsidian.Notice("HL7 Batch Ingestion Completed successfully!");
             }
+        });
     }
 
     getLocalDateString() {
