@@ -47,7 +47,8 @@ const DEFAULT_SETTINGS = {
     ].join('\n'),
     gitAuthor: "",
     gitTargetHeading: "## 🪵 Log",
-    autoSyncOnStartup: false
+    autoSyncOnStartup: false,
+    enableClipboardOcr: false
 };
 
 
@@ -2647,6 +2648,89 @@ class OmniLoggerSettingTab extends obsidian.PluginSettingTab {
         this.plugin = plugin;
     }
 
+    async runBleScan(btn, isComponent = false) {
+        if (isComponent) {
+            btn.setButtonText('Scanning...');
+            btn.disabled = true;
+        } else {
+            btn.textContent = 'Scanning...';
+            btn.disabled = true;
+        }
+        const child_process = require('child_process');
+        const path = require('path');
+        const fs = require('fs');
+        const vaultPath = this.plugin.app.vault.adapter.getBasePath();
+        const pluginDir = path.join(vaultPath, '.obsidian', 'plugins', 'omni-logger');
+        const venvPython = require('os').platform() === 'win32'
+            ? path.join(pluginDir, '.venv', 'Scripts', 'python.exe')
+            : path.join(pluginDir, '.venv', 'bin', 'python');
+        const pythonCmd = fs.existsSync(venvPython) ? `"${venvPython}"` : 'python';
+        const scriptPath = path.join(pluginDir, 'ble_scan.py');
+
+        child_process.exec(`${pythonCmd} "${scriptPath}"`, (err, stdout, stderr) => {
+            const origText = btn.getAttribute('data-original-text') || 'Scan Now';
+            if (isComponent) {
+                btn.setButtonText(origText);
+                btn.disabled = false;
+            } else {
+                btn.textContent = origText;
+                btn.disabled = false;
+            }
+            if (err) { new obsidian.Notice('Scan failed: ' + (stderr || err.message)); return; }
+            let foundDevices;
+            try { foundDevices = JSON.parse(stdout.trim()); } catch (e) { new obsidian.Notice('Failed to parse scan output.'); return; }
+            if (foundDevices.error) { new obsidian.Notice('Scan failed: ' + foundDevices.error); return; }
+            if (!foundDevices.length) { new obsidian.Notice('No BLE devices found nearby.'); return; }
+
+            // ── Pair modal ──────────────────────────────────────
+            const modal = new obsidian.Modal(this.plugin.app);
+            modal.titleEl.setText('Pair BLE Device');
+            const { contentEl } = modal;
+            contentEl.style.padding = '16px';
+
+            contentEl.createEl('p', { text: 'Select the discovered device to pair:', style: 'margin-bottom:8px; font-weight:600;' });
+            const devSelect = contentEl.createEl('select', { style: 'width:100%; margin-bottom:12px;' });
+            foundDevices.forEach(d => devSelect.createEl('option', { value: d.address, text: `${d.name || 'Unknown'}  (${d.address})` }));
+
+            contentEl.createEl('p', { text: 'Friendly Display Name:', style: 'margin-bottom:6px; font-weight:600;' });
+            const nameInput = contentEl.createEl('input', { type: 'text', style: 'width:100%; margin-bottom:12px;' });
+            nameInput.value = 'Smart Ring';
+
+            const advToggle = contentEl.createEl('details', { style: 'margin-bottom:12px;' });
+            advToggle.createEl('summary', { text: 'Advanced: Lorax handshake (optional)', style: 'cursor:pointer; font-size:0.9em;' });
+            const advBody = advToggle.createDiv({ style: 'padding:8px 0;' });
+            const loraxCheck = advBody.createEl('input', { type: 'checkbox' });
+            advBody.createSpan({ text: ' Use Lorax handshake', style: 'margin-left:6px;' });
+            advBody.createEl('br');
+
+            advBody.createEl('label', { text: 'Command UUID:', style: 'font-size:0.85em;' });
+            const cmdUuidInput = advBody.createEl('input', { type: 'text', style: 'width:100%; margin-bottom:6px; font-size:0.85em;' });
+            advBody.createEl('label', { text: 'Response UUID:', style: 'font-size:0.85em;' });
+            const respUuidInput = advBody.createEl('input', { type: 'text', style: 'width:100%; margin-bottom:6px; font-size:0.85em;' });
+            advBody.createEl('label', { text: 'Handshake Key (Base64):', style: 'font-size:0.85em;' });
+            const keyInput = advBody.createEl('input', { type: 'password', style: 'width:100%; font-size:0.85em;' });
+
+            const pairBtn = contentEl.createEl('button', { text: 'Save to Paired Devices', cls: 'mod-cta', style: 'margin-top:12px; width:100%;' });
+            pairBtn.onclick = () => {
+                const friendlyName = nameInput.value.trim();
+                if (!friendlyName) { new obsidian.Notice('Please enter a friendly name.'); return; }
+                const deviceObj = {
+                    name: friendlyName,
+                    address: devSelect.value,
+                    useLoraxHandshake: loraxCheck.checked,
+                    commandUuid: cmdUuidInput.value.trim(),
+                    responseUuid: respUuidInput.value.trim(),
+                    handshakeKeyBase64: keyInput.value.trim()
+                };
+                this.plugin.savePairedDevice(deviceObj);
+                this.display(); // Refresh settings tab to show new device
+                new obsidian.Notice(`Device "${friendlyName}" paired and saved!`);
+                modal.close();
+            };
+            modal.open();
+        });
+    }
+
     display() {
         const { containerEl } = this;
         containerEl.empty();
@@ -2834,9 +2918,17 @@ class OmniLoggerSettingTab extends obsidian.PluginSettingTab {
         const connectionsHeader = containerEl.createDiv({ style: 'display:flex; justify-content:space-between; align-items:center; margin-bottom:15px;' });
         connectionsHeader.createEl('h3', { text: '🔌 Sources', style: 'margin:0;' });
         
-        const addApiBtn = connectionsHeader.createEl('button', { text: '+ Add API Connection', cls: 'mod-cta' });
+        const headerButtons = connectionsHeader.createDiv({ style: 'display:flex; gap:10px;' });
+        
+        const addApiBtn = headerButtons.createEl('button', { text: '+ Add API Connection', cls: 'mod-cta' });
         addApiBtn.onclick = () => {
             new OmniApiWizardModal(this.app, this.plugin, () => this.display()).open();
+        };
+
+        const scanBleBtn = headerButtons.createEl('button', { text: '+ Pair BLE Device', cls: 'mod-cta' });
+        scanBleBtn.setAttribute('data-original-text', '+ Pair BLE Device');
+        scanBleBtn.onclick = async () => {
+            await this.runBleScan(scanBleBtn, false);
         };
 
         // ── Card C: Git Logger Integration (Collapsible) ─────────────────────
@@ -2902,7 +2994,10 @@ class OmniLoggerSettingTab extends obsidian.PluginSettingTab {
         }
         
         const googleHealthHeaderDiv = googleHealthDetails.createEl('summary', { style: 'cursor:pointer; font-weight:bold; display:flex; align-items:center; justify-content:space-between;' });
-        const googleHealthTitleSpan = googleHealthHeaderDiv.createSpan({ text: '🔗 Google Health Integration', style: 'font-size: 1.1em; color: var(--text-accent);' });
+        const googleHealthTitleSpan = googleHealthHeaderDiv.createSpan({ text: '🔗 Google Health Integration' });
+        googleHealthTitleSpan.style.fontSize = '1.2em';
+        googleHealthTitleSpan.style.fontWeight = 'bold';
+        googleHealthTitleSpan.style.color = 'var(--text-accent)';
         const googleHealthStatusBadge = createStatusBadge(googleHealthHeaderDiv);
         
         // Auto-check connection status on load
@@ -3131,6 +3226,43 @@ class OmniLoggerSettingTab extends obsidian.PluginSettingTab {
             });
         }
 
+        // ── Card D: Clipboard / OCR Ingestion (Collapsible) ─────────────────
+        const ocrDetails = containerEl.createEl('details');
+        ocrDetails.style.marginBottom = '15px';
+        ocrDetails.style.border = '1px solid var(--background-modifier-border)';
+        ocrDetails.style.borderRadius = '6px';
+        ocrDetails.style.padding = '8px';
+        if (this.plugin.settings.enableClipboardOcr) {
+            ocrDetails.setAttribute('open', '');
+        }
+        
+        const ocrSummary = ocrDetails.createEl('summary', { style: 'cursor:pointer; font-weight:bold; display:flex; align-items:center; justify-content:space-between;' });
+        const ocrTitleSpan = ocrSummary.createSpan({ text: '📋 Clipboard / OCR Ingestion' });
+        ocrTitleSpan.style.fontSize = '1.2em';
+        ocrTitleSpan.style.fontWeight = 'bold';
+        ocrTitleSpan.style.color = 'var(--text-accent)';
+        
+        const ocrStatusBadge = createStatusBadge(ocrSummary);
+        const updateOcrBadge = () => {
+            const hasOcr = this.plugin.settings.enableClipboardOcr !== false;
+            updateBadge(ocrStatusBadge, hasOcr, hasOcr ? 'Active' : 'Disabled');
+        };
+        updateOcrBadge();
+        
+        const ocrDetailsContainer = ocrDetails.createDiv();
+        ocrDetailsContainer.style.paddingTop = '10px';
+        
+        new obsidian.Setting(ocrDetailsContainer)
+            .setName('Enable Clipboard Ingestion')
+            .setDesc('Enable automatic parsing of screenshots or image data copied to the clipboard for OCR ingestion.')
+            .addToggle(toggle => toggle
+                .setValue(this.plugin.settings.enableClipboardOcr || false)
+                .onChange(async (value) => {
+                    this.plugin.settings.enableClipboardOcr = value;
+                    await this.plugin.saveSettings();
+                    updateOcrBadge();
+                }));
+
         // ── Cards B+: Custom API Connections Dashboard ───────────────────────
         const customApiConns = (this.plugin.settings.apiConnections || []).filter(c => c.id !== 'google-health');
         customApiConns.forEach(c => {
@@ -3141,7 +3273,10 @@ class OmniLoggerSettingTab extends obsidian.PluginSettingTab {
             apiDetails.style.padding = '8px';
 
             const apiHeaderDiv = apiDetails.createEl('summary', { style: 'cursor:pointer; font-weight:bold; display:flex; align-items:center; justify-content:space-between;' });
-            const apiTitleSpan = apiHeaderDiv.createSpan({ text: `🔌 Connection: ${c.name}`, style: 'font-size: 1.1em; color: var(--text-accent);' });
+            const apiTitleSpan = apiHeaderDiv.createSpan({ text: `🔌 Connection: ${c.name}` });
+            apiTitleSpan.style.fontSize = '1.2em';
+            apiTitleSpan.style.fontWeight = 'bold';
+            apiTitleSpan.style.color = 'var(--text-accent)';
             const apiStatusBadge = createStatusBadge(apiHeaderDiv);
 
             const checkConnectionStatus = async () => {
@@ -3228,7 +3363,10 @@ class OmniLoggerSettingTab extends obsidian.PluginSettingTab {
         bleDetails.style.padding = '8px';
         
         const bleHeaderDiv = bleDetails.createEl('summary', { style: 'cursor:pointer; font-weight:bold; display:flex; align-items:center; justify-content:space-between;' });
-        const bleTitleSpan = bleHeaderDiv.createSpan({ text: '🦷 Bluetooth BLE Device Manager', style: 'font-size: 1.1em; color: var(--text-accent);' });
+        const bleTitleSpan = bleHeaderDiv.createSpan({ text: '🦷 Bluetooth BLE Device Manager' });
+        bleTitleSpan.style.fontSize = '1.2em';
+        bleTitleSpan.style.fontWeight = 'bold';
+        bleTitleSpan.style.color = 'var(--text-accent)';
         const bleStatusBadge = createStatusBadge(bleHeaderDiv);
         
         // Refresh BLE status badge
@@ -3289,77 +3427,9 @@ class OmniLoggerSettingTab extends obsidian.PluginSettingTab {
             .addButton(btn => btn
                 .setButtonText('Scan Now')
                 .onClick(async () => {
-                    btn.setButtonText('Scanning...');
-                    btn.disabled = true;
-                    const child_process = require('child_process');
-                    const path = require('path');
-                    const fs = require('fs');
-                    const vaultPath = this.plugin.app.vault.adapter.getBasePath();
-                    const pluginDir = path.join(vaultPath, '.obsidian', 'plugins', 'omni-logger');
-                    const venvPython = require('os').platform() === 'win32'
-                        ? path.join(pluginDir, '.venv', 'Scripts', 'python.exe')
-                        : path.join(pluginDir, '.venv', 'bin', 'python');
-                    const pythonCmd = fs.existsSync(venvPython) ? `"${venvPython}"` : 'python';
-                    const scriptPath = path.join(pluginDir, 'ble_scan.py');
-
-                    child_process.exec(`${pythonCmd} "${scriptPath}"`, (err, stdout, stderr) => {
-                        btn.setButtonText('Scan Now');
-                        btn.disabled = false;
-                        if (err) { new obsidian.Notice('Scan failed: ' + (stderr || err.message)); return; }
-                        let foundDevices;
-                        try { foundDevices = JSON.parse(stdout.trim()); } catch (e) { new obsidian.Notice('Failed to parse scan output.'); return; }
-                        if (foundDevices.error) { new obsidian.Notice('Scan failed: ' + foundDevices.error); return; }
-                        if (!foundDevices.length) { new obsidian.Notice('No BLE devices found nearby.'); return; }
-
-                        // ── Pair modal ──────────────────────────────────────
-                        const modal = new obsidian.Modal(this.plugin.app);
-                        modal.titleEl.setText('Pair BLE Device');
-                        const { contentEl } = modal;
-                        contentEl.style.padding = '16px';
-
-                        contentEl.createEl('p', { text: 'Select the discovered device to pair:', style: 'margin-bottom:8px; font-weight:600;' });
-                        const devSelect = contentEl.createEl('select', { style: 'width:100%; margin-bottom:12px;' });
-                        foundDevices.forEach(d => devSelect.createEl('option', { value: d.address, text: `${d.name || 'Unknown'}  (${d.address})` }));
-
-                        contentEl.createEl('p', { text: 'Friendly Display Name:', style: 'margin-bottom:6px; font-weight:600;' });
-                        const nameInput = contentEl.createEl('input', { type: 'text', style: 'width:100%; margin-bottom:12px;' });
-                        nameInput.value = 'Smart Ring';
-
-                        const advToggle = contentEl.createEl('details', { style: 'margin-bottom:12px;' });
-                        advToggle.createEl('summary', { text: 'Advanced: Lorax handshake (optional)', style: 'cursor:pointer; font-size:0.9em;' });
-                        const advBody = advToggle.createDiv({ style: 'padding:8px 0;' });
-                        const loraxCheck = advBody.createEl('input', { type: 'checkbox' });
-                        advBody.createSpan({ text: ' Use Lorax handshake', style: 'margin-left:6px;' });
-                        advBody.createEl('br');
-
-                        advBody.createEl('label', { text: 'Command UUID:', style: 'font-size:0.85em;' });
-                        const cmdUuidInput = advBody.createEl('input', { type: 'text', style: 'width:100%; margin-bottom:6px; font-size:0.85em;' });
-                        advBody.createEl('label', { text: 'Response UUID:', style: 'font-size:0.85em;' });
-                        const respUuidInput = advBody.createEl('input', { type: 'text', style: 'width:100%; margin-bottom:6px; font-size:0.85em;' });
-                        advBody.createEl('label', { text: 'Handshake Key (Base64):', style: 'font-size:0.85em;' });
-                        const keyInput = advBody.createEl('input', { type: 'password', style: 'width:100%; font-size:0.85em;' });
-
-                        const pairBtn = contentEl.createEl('button', { text: 'Save to Paired Devices', cls: 'mod-cta', style: 'margin-top:12px; width:100%;' });
-                        pairBtn.onclick = () => {
-                            const friendlyName = nameInput.value.trim();
-                            if (!friendlyName) { new obsidian.Notice('Please enter a friendly name.'); return; }
-                            const deviceObj = {
-                                name: friendlyName,
-                                address: devSelect.value,
-                                useLoraxHandshake: loraxCheck.checked,
-                                commandUuid: cmdUuidInput.value.trim(),
-                                responseUuid: respUuidInput.value.trim(),
-                                handshakeKeyBase64: keyInput.value.trim()
-                            };
-                            this.plugin.savePairedDevice(deviceObj);
-                            refreshDeviceDropdown();
-                            new obsidian.Notice(`Device "${friendlyName}" paired and saved!`);
-                            modal.close();
-                        };
-                        modal.open();
-                    });
-                })
-            );
+                    btn.buttonEl.setAttribute('data-original-text', 'Scan Now');
+                    await this.runBleScan(btn, true);
+                }));
 
         // =====================================================================
         // 3. 📋 LOG TEMPLATES & SETTINGS (Bottom)
@@ -3388,7 +3458,7 @@ class OmniLoggerSettingTab extends obsidian.PluginSettingTab {
         customLogsDetails.setAttribute('open', '');
         const customLogsSummary = customLogsDetails.createEl('summary', { text: '🛠️ Custom Log Templates Registry' });
         customLogsSummary.style.cursor = 'pointer';
-        customLogsSummary.style.fontSize = '1.1em';
+        customLogsSummary.style.fontSize = '1.2em';
         customLogsSummary.style.fontWeight = 'bold';
         customLogsSummary.style.color = 'var(--text-accent)';
 
@@ -4126,6 +4196,8 @@ class OmniTemplateCreatorModal extends obsidian.Modal {
         this.selectedDeviceName = "";
         this.selectedGoogleCategory = "google-sleep";
         this.scanSuggestions = "";
+        this.syncStyle = "manual";
+        this.syncInterval = 60;
     }
 
     onOpen() {
@@ -4135,6 +4207,23 @@ class OmniTemplateCreatorModal extends obsidian.Modal {
         contentEl.createEl('h2', { text: 'Create Custom Logging Template', cls: 'omni-modal-title' });
         
         const mainContainer = contentEl.createDiv({ cls: 'omni-modal-container' });
+
+        let syncStyleSetting;
+        let syncIntervalSetting;
+        const updateSyncIntervalVisibility = () => {
+            if (syncStyleSetting && syncIntervalSetting) {
+                if (this.mode !== 'ocr' && this.syncStyle === 'automatic') {
+                    syncIntervalSetting.settingEl.style.display = '';
+                } else {
+                    syncIntervalSetting.settingEl.style.display = 'none';
+                }
+                if (this.mode === 'ocr') {
+                    syncStyleSetting.settingEl.style.display = 'none';
+                } else {
+                    syncStyleSetting.settingEl.style.display = '';
+                }
+            }
+        };
         
         const nameSetting = new obsidian.Setting(mainContainer)
             .setName('Template Name')
@@ -4170,17 +4259,21 @@ class OmniTemplateCreatorModal extends obsidian.Modal {
                 this.mode = 'ocr';
                 this.connectionId = '';
                 this.selectedDeviceName = '';
+                this.syncInterval = 60;
             } else if (val.startsWith('api-')) {
                 this.mode = 'api';
                 this.connectionId = val.replace('api-', '');
                 this.selectedDeviceName = '';
+                this.syncInterval = 60;
             } else if (val.startsWith('ble-')) {
                 this.mode = 'ble';
                 this.connectionId = '';
                 this.selectedDeviceName = val.replace('ble-', '');
+                this.syncInterval = 15;
             }
             updateInputSection();
             updateButtons();
+            updateSyncIntervalVisibility();
         };
 
         // If pre-selected source passed
@@ -4203,6 +4296,30 @@ class OmniTemplateCreatorModal extends obsidian.Modal {
                 .setValue(this.destination)
                 .onChange(val => this.destination = val)
             );
+
+        syncStyleSetting = new obsidian.Setting(mainContainer)
+            .setName('Sync Style')
+            .setDesc('Choose whether to sync manually or automatically in the background.')
+            .addDropdown(dropdown => dropdown
+                .addOption('manual', 'Manual (Button/Palette)')
+                .addOption('automatic', 'Automatic (Background Polling)')
+                .setValue(this.syncStyle)
+                .onChange(val => {
+                    this.syncStyle = val;
+                    updateSyncIntervalVisibility();
+                })
+            );
+
+        syncIntervalSetting = new obsidian.Setting(mainContainer)
+            .setName('Sync Frequency (minutes)')
+            .setDesc('Time interval between background sync checks.')
+            .addText(text => text
+                .setPlaceholder('60')
+                .setValue(String(this.syncInterval))
+                .onChange(val => this.syncInterval = parseInt(val) || 60)
+            );
+
+        updateSyncIntervalVisibility();
 
         mainContainer.createEl('h4', { text: 'Example Input Data' });
         const inputSection = mainContainer.createDiv();
@@ -4473,8 +4590,8 @@ class OmniTemplateCreatorModal extends obsidian.Modal {
                     mode: 'ble',
                     destination: this.destination,
                     deviceName: this.selectedDeviceName,
-                    syncStyle: 'manual',
-                    syncInterval: 15,
+                    syncStyle: this.syncStyle || 'manual',
+                    syncInterval: this.syncInterval || 15,
                     metrics: [
                         {
                             name: "Battery Level",
@@ -4496,8 +4613,8 @@ class OmniTemplateCreatorModal extends obsidian.Modal {
                     mode: this.mode,
                     connectionId: this.connectionId,
                     destination: this.destination,
-                    syncStyle: 'manual',
-                    syncInterval: 60,
+                    syncStyle: this.mode === 'ocr' ? 'manual' : (this.syncStyle || 'manual'),
+                    syncInterval: this.syncInterval || 60,
                     prompt: this.generatedPrompt
                 };
             }
