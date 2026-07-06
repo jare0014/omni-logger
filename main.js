@@ -499,7 +499,8 @@ class OmniLoggerPlugin extends obsidian.Plugin {
             console.error("Failed to read templates from vault:", e);
         }
         
-        this.settings.customTemplates = templates;
+        const builtIns = (this.settings.customTemplates || []).filter(t => ['calls', 'lumosity', 'health', 'google-sleep', 'google-hrv', 'google-hydration', 'google-nutrition'].includes(t.id));
+        this.settings.customTemplates = [...builtIns, ...templates];
     }
 
     async saveCustomTemplateToVault(template, exampleInput, targetAppearance, instructions) {
