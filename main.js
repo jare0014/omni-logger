@@ -4269,10 +4269,10 @@ class OmniBleManagerModal extends obsidian.Modal {
                         nameInput.value = 'Smart Ring';
 
                         const advToggle = contentEl.createEl('details', { style: 'margin-bottom:12px;' });
-                        advToggle.createEl('summary', { text: 'Advanced: Lorax handshake (optional)', style: 'cursor:pointer; font-size:0.9em;' });
+                        advToggle.createEl('summary', { text: 'Advanced: secure challenge-response GATT handshake (optional)', style: 'cursor:pointer; font-size:0.9em;' });
                         const advBody = advToggle.createDiv({ style: 'padding:8px 0;' });
                         const loraxCheck = advBody.createEl('input', { type: 'checkbox' });
-                        advBody.createSpan({ text: ' Use Lorax handshake', style: 'margin-left:6px;' });
+                        advBody.createSpan({ text: ' Use secure challenge-response handshake', style: 'margin-left:6px;' });
                         advBody.createEl('br');
 
                         advBody.createEl('label', { text: 'Command UUID:', style: 'font-size:0.85em;' });

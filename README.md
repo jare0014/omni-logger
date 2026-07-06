@@ -27,7 +27,7 @@ Omni-Logger operates across three decoupled layers:
 ## 🚀 Key Features
 
 *   **Custom API Wizard**: Easily add any HTTP API connection. Supports custom endpoint methods, custom headers, and token/credential authentication types (None, API Key, OAuth 2.0).
-*   **Modal BLE Device Manager**: Discover, pair, and configure Bluetooth Low Energy (BLE) devices (like smart rings or bands) using a background helper. Supports custom Lorax handshakes and metrics parsing.
+*   **Modal BLE Device Manager**: Discover, pair, and configure Bluetooth Low Energy (BLE) devices (like smart rings or bands) using a background helper. Supports custom GATT / challenge-response handshakes and metrics parsing.
 *   **Google Health Sync (Pre-configured)**: Built-in OAuth 2.0 connection to pull sleep, HRV, vitals, nutrition, and hydration biometrics into Obsidian.
 *   **Clipboard / OCR Ingestion**: Monitor your clipboard for screenshots (e.g., call logs, Lumosity workouts, fitness apps) and automatically parse and log metrics.
 *   **Local Git Activity Logger**: Aggregates native `git log` commit history across configured local repositories in the background to log your daily developer progress.
@@ -63,6 +63,17 @@ To enable Fitbit and Google Health sync:
 4. Create an **OAuth Web Client ID** and set the redirect URL to:
    `http://localhost:8082` (or your configured redirect port).
 5. In Obsidian Settings -> **Omni-Logger**, enter your Client ID and Client Secret, choose your sync scopes, and click **Connect Google Account**.
+
+### 4. Creating Custom API Connections & Templates
+1. Click **+ Add API Connection** in the Sources header.
+2. Enter your endpoint, select the request method, configure headers, and choose the Authentication Type (None, API Key, or OAuth 2.0).
+3. Scroll down to the templates registry at the bottom, select your newly added API connection, and click **+ Create New Template via LLM**.
+4. Configure target fields and prompts, and it is ready to sync on the fly!
+
+### 5. Pairing Bluetooth BLE Devices
+1. Click **+ Pair BLE Device** in the Sources header.
+2. Select your device from the discovered list, define a display name, and select advanced GATT handshakes if required.
+3. Once paired, you can create a custom BLE template referencing this device to automatically log biometrics in the background.
 
 ---
 
