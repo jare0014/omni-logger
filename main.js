@@ -1777,10 +1777,9 @@ Return your response strictly as a JSON object matching this schema:
 
         const expiryStr = tokenData.expiry;
         if (expiryStr) {
-            const cleanedExpiry = expiryStr.replace("Z", "");
             let expiryDt;
             try {
-                expiryDt = new Date(cleanedExpiry);
+                expiryDt = new Date(expiryStr);
             } catch (e) {
                 expiryDt = new Date(Date.now() - 3600 * 1000);
             }
