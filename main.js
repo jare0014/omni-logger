@@ -52,7 +52,8 @@ const DEFAULT_SETTINGS = {
     gitSyncStyle: 'manual',
     gitSyncInterval: 60,
     googleHealthSyncStyle: 'manual',
-    googleHealthSyncInterval: 60
+    googleHealthSyncInterval: 60,
+    deletedBuiltInTemplates: []
 };
 
 
@@ -200,7 +201,8 @@ class OmniLoggerPlugin extends obsidian.Plugin {
         ];
 
         for (const defT of defaultTemplates) {
-            if (!this.settings.customTemplates.some(t => t.id === defT.id)) {
+            const wasDeleted = (this.settings.deletedBuiltInTemplates || []).includes(defT.id);
+            if (!wasDeleted && !this.settings.customTemplates.some(t => t.id === defT.id)) {
                 this.settings.customTemplates.push(defT);
             }
         }
@@ -3274,18 +3276,18 @@ class OmniLoggerSettingTab extends obsidian.PluginSettingTab {
             instructionText.innerHTML = `
                 <ol>
                     <li>Go to the <a href="https://console.cloud.google.com/">Google Cloud Console</a>.</li>
-                    <li>Create a project and enable the <b>Fitness API</b>.</li>
-                    <li>Configure the OAuth consent screen with scopes:
+                    <li>Create a project and enable the <b>Google Health API</b> (NOT Fitness API).</li>
+                    <li>Configure the OAuth consent screen with the following scopes:
                         <ul>
-                            <li><code>https://www.googleapis.com/auth/fitness.activity.read</code></li>
-                            <li><code>https://www.googleapis.com/auth/fitness.body.read</code></li>
-                            <li><code>https://www.googleapis.com/auth/fitness.nutrition.read</code></li>
-                            <li><code>https://www.googleapis.com/auth/fitness.sleep.read</code></li>
+                            <li><code>https://www.googleapis.com/auth/googlehealth.sleep.readonly</code></li>
+                            <li><code>https://www.googleapis.com/auth/googlehealth.health_metrics_and_measurements.readonly</code></li>
+                            <li><code>https://www.googleapis.com/auth/googlehealth.nutrition.readonly</code></li>
+                            <li><code>https://www.googleapis.com/auth/googlehealth.nutrition.writeonly</code></li>
                         </ul>
                     </li>
                     <li>Go to <b>Credentials</b> -> Create Credentials -> <b>OAuth client ID</b>.</li>
                     <li>Select Application type: <b>Web application</b>.</li>
-                    <li>If Web Application, add <code>http://localhost:8092</code> to Authorized redirect URIs.</li>
+                    <li>Add <code>http://localhost:8092</code> to Authorized redirect URIs.</li>
                     <li>Click Create, then click <b>Download JSON</b>.</li>
                     <li>Open the JSON file in Notepad, copy everything, and paste it into the field above.</li>
                 </ol>
@@ -3594,7 +3596,9 @@ class OmniLoggerSettingTab extends obsidian.PluginSettingTab {
         const templatesContainer = customLogsDetailsContainer.createDiv();
         const renderTemplates = () => {
             templatesContainer.empty();
-            const templates = this.plugin.settings.customTemplates || [];
+            const templates = (this.plugin.settings.customTemplates || []).filter(t => 
+                !['google-sleep', 'google-hrv', 'google-hydration', 'google-nutrition'].includes(t.id)
+            );
 
             const saveTemplateOnTheFly = async (t, destVal, styleVal, intervalVal, deviceVal, configVal) => {
                 t.destination = destVal;
@@ -3721,13 +3725,23 @@ class OmniLoggerSettingTab extends obsidian.PluginSettingTab {
                     const editBtn = controls.createEl('button', { text: 'Save' });
                     editBtn.style.marginRight = '5px';
                     
-                    if (!isBuiltIn) {
-                        const delBtn = controls.createEl('button', { text: 'Delete' });
-                        delBtn.onclick = async () => {
+                    const delBtn = controls.createEl('button', { text: 'Delete' });
+                    delBtn.onclick = async () => {
+                        if (confirm(`Are you sure you want to delete template "${t.name}"?`)) {
+                            if (isBuiltIn) {
+                                if (!this.plugin.settings.deletedBuiltInTemplates) {
+                                    this.plugin.settings.deletedBuiltInTemplates = [];
+                                }
+                                if (!this.plugin.settings.deletedBuiltInTemplates.includes(t.id)) {
+                                    this.plugin.settings.deletedBuiltInTemplates.push(t.id);
+                                }
+                            }
+                            this.plugin.settings.customTemplates = (this.plugin.settings.customTemplates || []).filter(temp => temp.id !== t.id);
+                            await this.plugin.saveSettings();
                             await this.plugin.deleteCustomTemplateFromVault(t.name);
                             renderTemplates();
-                        };
-                    }
+                        }
+                    };
                     
                     let configArea;
                     let styleSelect, intervalInput, intervalRow, warningEl;
