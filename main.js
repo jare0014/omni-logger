@@ -351,6 +351,9 @@ class OmniLoggerPlugin extends obsidian.Plugin {
                         }).catch(err => {
                             new obsidian.Notice(`Connection sync failed for ${t.name}: ${err.message}`);
                         });
+                    } else if (t.mode === 'api') {
+                        new obsidian.Notice(`Syncing API connection for ${t.name}...`);
+                        this.syncApiTemplate(t.id);
                     } else {
                         const modal = new OmniLoggerModal(this.app, this);
                         modal.selectedType = t.id;
@@ -493,7 +496,12 @@ class OmniLoggerPlugin extends obsidian.Plugin {
         }
         
         // Save prompt
-        fs.writeFileSync(path.join(dirPath, 'system_prompt.txt'), template.prompt, 'utf8');
+        fs.writeFileSync(path.join(dirPath, 'system_prompt.txt'), template.prompt || '', 'utf8');
+        
+        // Save parser script if present
+        if (template.pythonCode) {
+            fs.writeFileSync(path.join(dirPath, 'parser.py'), template.pythonCode, 'utf8');
+        }
         
         // Save instructions
         fs.writeFileSync(path.join(dirPath, 'instructions.txt'), instructions || '', 'utf8');
@@ -1232,17 +1240,43 @@ class OmniLoggerPlugin extends obsidian.Plugin {
             if (['google-sleep', 'google-hrv', 'google-hydration', 'google-nutrition'].includes(t.id)) {
                 extracted = this.parseGoogleHealthPayloadLocally(t.id, payloadText);
             } else {
-                const provider = this.settings.executorProvider || 'gemini';
-                const model = this.settings.executorModel || 'gemini-2.5-flash';
+                const fs = require('fs');
+                const path = require('path');
+                const vaultPath = this.app.vault.adapter.getBasePath();
+                const folderName = this.settings.ingredientsFolder || 'Omni_Templates';
+                const cleanDirName = t.name.replace(/[^a-zA-Z0-9 _-]/g, '');
+                const parserPath = path.join(vaultPath, folderName, cleanDirName, 'parser.py');
                 
-                const llmResponse = await this.callLLM(
-                    provider,
-                    model,
-                    t.prompt,
-                    `Here is the API response payload for today:\n${payloadText}`
-                );
+                let parsedLocally = false;
+                if (fs.existsSync(parserPath)) {
+                    const tempInputPath = path.join(vaultPath, folderName, cleanDirName, 'temp_input.txt');
+                    fs.writeFileSync(tempInputPath, payloadText, 'utf8');
+                    
+                    try {
+                        const resultText = await this.runPythonScript(parserPath, `"${tempInputPath}"`, true);
+                        try { fs.unlinkSync(tempInputPath); } catch(e) {}
+                        extracted = JSON.parse(resultText);
+                        parsedLocally = true;
+                        console.log(`Successfully parsed ${t.name} locally via Python parser.py`);
+                    } catch(e) {
+                        console.warn(`Local Python parser.py failed for ${t.name}, falling back to LLM:`, e);
+                        try { fs.unlinkSync(tempInputPath); } catch(err) {}
+                    }
+                }
                 
-                extracted = JSON.parse(llmResponse);
+                if (!parsedLocally) {
+                    const provider = this.settings.executorProvider || 'gemini';
+                    const model = this.settings.executorModel || 'gemini-2.5-flash';
+                    
+                    const llmResponse = await this.callLLM(
+                        provider,
+                        model,
+                        t.prompt,
+                        `Here is the API response payload for today:\n${payloadText}`
+                    );
+                    
+                    extracted = JSON.parse(llmResponse);
+                }
             }
             
             // Map LLM output keys to target keys configured by the user
@@ -1621,9 +1655,14 @@ class OmniLoggerPlugin extends obsidian.Plugin {
     async generateCustomTemplatePrompt(name, mode, exampleInput, targetAppearance, destination, customInstructions = "") {
         let instructions = `You are a meta-prompting assistant. The user wants to build a custom logging template for Obsidian.
 Your goal is to write a highly detailed, instruction-focused system prompt for a Gemini or Ollama model. 
-When that model runs, it will be given a screenshot (if OCR mode) or an API response text (if API mode) and must extract relevant metrics to save to the user's daily note.
+When that model runs, it will be given a screenshot (if OCR mode) or an API response text (if API mode) and must extract relevant metrics to save to the user's daily note.`;
 
-Here are the details for the custom template:
+        if (mode === 'api') {
+            instructions += `\nAdditionally, because this is an API mode template with structured JSON/text payload, you MUST write a python script 'parser.py' that can parse this payload locally and deterministically.
+The python script will receive the filename of a temporary text file containing the raw payload text as its first argument (sys.argv[1]). It should read that file, parse it, extract the metrics, and print the resulting JSON strictly matching the schema to stdout (with no other text printed).`;
+        }
+
+        instructions += `\n\nHere are the details for the custom template:
 - Template Name: ${name}
 - Mode: ${mode === 'ocr' ? 'OCR (Screenshot)' : 'API (Text/JSON)'}
 - Expected Target Output/Appearance:
@@ -1634,16 +1673,31 @@ ${targetAppearance}
             instructions += `\n- Custom Instructions/User Rules to incorporate: ${customInstructions}`;
         }
 
-        instructions += `\n\nPlease write a system prompt that tells the model:
-1. What role to assume (e.g. an expert data extractor for ${name}).
-2. What specific visual features or text patterns to look for.
-3. Precisely what fields to extract and compile into a JSON object.
-4. Specify the exact JSON schema matching the fields in the user's expected target output. For example, if they want frontmatter or dataview fields, the JSON keys should match the field names.
-5. Emphasize returning ONLY the raw JSON object matching the schema, with no markdown code fences, no extra text, and no preambles.
+        instructions += `\n\nPlease write:
+1. A system prompt that tells the model:
+   a. What role to assume (e.g. an expert data extractor for ${name}).
+   b. What specific visual features or text patterns to look for.
+   c. Precisely what fields to extract and compile into a JSON object.
+   d. Specify the exact JSON schema matching the fields in the user's expected target output.
+   e. Emphasize returning ONLY the raw JSON object matching the schema.`;
 
-Return your response strictly as a JSON object matching this schema:
+        if (mode === 'api') {
+            instructions += `\n2. A python script that implements this exact parser locally using sys.argv[1]. E.g.:
+import sys
+import json
+# read file from sys.argv[1]
+with open(sys.argv[1], 'r', encoding='utf-8') as f:
+    payload = f.read()
+# Parse payload (using json.loads or regex)
+# ...
+result = { ... }
+print(json.dumps(result))
+Ensure only valid JSON is output, and no debug or extra text is printed.`;
+        }
+
+        instructions += `\n\nReturn your response strictly as a JSON object matching this schema:
 {
-  "prompt": "The full system prompt text you generated."
+  "prompt": "The full system prompt text you generated."${mode === 'api' ? ',\n  "pythonCode": "The full python script code you generated."' : ''}
 }`;
 
         const provider = this.settings.templateProvider || 'gemini';
@@ -1659,7 +1713,7 @@ Return your response strictly as a JSON object matching this schema:
         );
         
         const parsed = JSON.parse(textResponse);
-        return parsed.prompt;
+        return { prompt: parsed.prompt, pythonCode: parsed.pythonCode || "" };
     }
 
     async startOAuth2Flow(connectionId) {
@@ -4483,6 +4537,7 @@ class OmniTemplateCreatorModal extends obsidian.Modal {
         this.targetAppearance = "";
         this.customInstructions = "";
         this.generatedPrompt = "";
+        this.generatedPythonCode = "";
         this.connectionId = "";
         this.selectedDeviceName = "";
         this.selectedGoogleCategory = "google-sleep";
@@ -4846,7 +4901,7 @@ class OmniTemplateCreatorModal extends obsidian.Modal {
             statusBar.setText("Generating template system instructions using LLM...");
             
             try {
-                const generated = await this.plugin.generateCustomTemplatePrompt(
+                const res = await this.plugin.generateCustomTemplatePrompt(
                     this.name,
                     this.mode,
                     this.exampleInput,
@@ -4855,8 +4910,9 @@ class OmniTemplateCreatorModal extends obsidian.Modal {
                     this.customInstructions
                 );
                 
-                this.generatedPrompt = generated;
-                promptReview.value = generated;
+                this.generatedPrompt = res.prompt;
+                this.generatedPythonCode = res.pythonCode || "";
+                promptReview.value = res.prompt;
                 reviewContainer.style.display = 'block';
                 saveBtn.style.display = 'inline-block';
                 statusBar.setText("Template prompt generated. Review and click Save.");
@@ -4906,7 +4962,8 @@ class OmniTemplateCreatorModal extends obsidian.Modal {
                     destination: this.destination,
                     syncStyle: this.mode === 'ocr' ? 'manual' : (this.syncStyle || 'manual'),
                     syncInterval: this.syncInterval || 60,
-                    prompt: this.generatedPrompt
+                    prompt: this.generatedPrompt,
+                    pythonCode: this.generatedPythonCode
                 };
             }
             await this.plugin.saveCustomTemplateToVault(newTemplate, this.exampleInput, this.targetAppearance, this.customInstructions);
