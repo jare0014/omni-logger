@@ -14,7 +14,7 @@ const DEFAULT_SETTINGS = {
     dataSourceApi: 'google-health',
     omniCallsInstructions: 'You are a call log analyzer. Examine this phone call logs screenshot and count the number of outgoing and incoming call entries grouped by hourly blocks from 8 AM to 4 PM for the target day. Return findings strictly in a JSON format matching this schema:\n{\n  "calls-08am": 0,\n  "calls-09am": 0,\n  "calls-10am": 0,\n  "calls-11am": 0,\n  "calls-12pm": 0,\n  "calls-01pm": 0,\n  "calls-02pm": 0,\n  "calls-03pm": 0,\n  "calls-04pm": 0\n}\nEnsure no other text is returned besides the JSON.',
     omniLumosityInstructions: 'You are a health and brain-training tracker assistant. Examine this Lumosity workout screenshot and extract the following:\n1. The time of practice (if visible, e.g. "08:15 AM". If not visible, return "Not Found").\n2. The specific game played, its corresponding category, and the score achieved.\n\nReturn findings strictly in a JSON format matching this schema:\n{\n  "start_time": "HH:MM AM/PM",\n  "scores": [\n    {\n      "game": "Game Name",\n      "category": "Category",\n      "score": 1234\n    }\n  ]\n}\nEnsure no other text is returned besides the JSON.',
-    omniHealthInstructions: 'You are a health tracker assistant. Examine this health dashboard screenshot and extract sleep hours, wake up time, and heart rate variability (HRV) if visible.\n\nReturn findings strictly in a JSON format matching this schema:\n{\n  "Sleep_hours": "H:MM",\n  "wake_up": "H:MM",\n  "HRV": 55,\n  "Sleep_score": 75,\n  "Readiness": 80\n}\nEnsure no other text is returned besides the JSON.',
+    omniHealthInstructions: 'You are a health tracker assistant. Examine this health dashboard screenshot and extract sleep hours, wake up time, heart rate variability (HRV), sleep score, and readiness score if visible.\n\nReturn findings strictly in a JSON format matching this schema:\n{\n  "Sleep_hours": "H:MM",\n  "wake_up": "H:MM",\n  "HRV": 55,\n  "Sleep_score": 75,\n  "Readiness": 80\n}\nEnsure no other text is returned besides the JSON.',
     customTemplates: [],
     apiConnections: [],
     healthSyncConfig: {
@@ -33,9 +33,9 @@ const DEFAULT_SETTINGS = {
         "https://www.googleapis.com/auth/googlehealth.nutrition.readonly",
         "https://www.googleapis.com/auth/googlehealth.nutrition.writeonly"
     ],
-    googleHealthSleepPrompt: 'Examine the raw Google Fitness API JSON payload representing my sleep sessions for today. Extract the longest sleep session and calculate the total sleep duration in hours and minutes. Your output MUST be a valid JSON object with keys like "Sleep" and "Wakeup". Do not wrap in markdown blocks. Example: { "Sleep": "7h 30m", "Wakeup": "07:00 AM" }',
-    googleHealthVitalsPrompt: 'Examine the raw Google Fitness API JSON payload representing heart rate variability (HRV) for today. Extract the RMSSD or equivalent metric. Your output MUST be a valid JSON object with keys like "HRV". Example: { "HRV": 55 }',
-    googleHealthNutritionPrompt: 'Examine the raw Google Fitness API JSON payload representing my food logs for today. Summarize caffeine (mg), alcohol (g), protein (g), and calories (kcal). Your output MUST be a valid JSON object with keys like "caffeine", "alcohol", "protein", "calories". Example: { "caffeine": 95, "alcohol": 0, "protein": 30, "calories": 160 }',
+    googleHealthSleepPrompt: 'Examine the raw Google Fitness API JSON payload representing my sleep sessions for today. Extract the longest sleep session and calculate the total sleep duration (minutesAsleep). Output the sleep duration in the exact format X hr Y min. Also extract the wake up time from the end of the session, making sure to apply the endUtcOffset to convert the Zulu time into local time (e.g. if time is 09:54Z and offset is -18000s (5 hours), local time is 04:54 AM). Format the wake up time as HH:MM AM/PM. Your output MUST be a valid JSON object with keys like "Sleep" and "Wakeup". Do not wrap in markdown blocks. Example: { "Sleep": "7 hr 5 min", "Wakeup": "04:54 AM" }',
+    googleHealthVitalsPrompt: 'Examine the raw Google Fitness API JSON payload representing heart rate variability (HRV) for today. Extract the averageHeartRateVariabilityMilliseconds or RMSSD metric. Round the value to the nearest integer. Your output MUST be a valid JSON object with keys like "HRV". Example: { "HRV": 44 }',
+    googleHealthNutritionPrompt: 'Examine the raw Google Fitness API JSON payload representing my food logs for today. Summarize caffeine, alcohol, protein, and calories. IMPORTANT: The API may provide caffeine and alcohol in GRAMS (e.g. 0.225 grams of caffeine). You MUST convert this to MILLIGRAMS (mg) by multiplying by 1000 (e.g. 0.225g = 225mg). Output values as numbers without units. Your output MUST be a valid JSON object with exactly these keys: "caffeine", "alcohol", "protein", "calories". Example: { "caffeine": 225, "alcohol": 0, "protein": 30, "calories": 160 }',
     googleHealthHydrationPrompt: 'Examine the raw Google Fitness API JSON payload representing hydration. Summarize total water intake in milliliters. Your output MUST be a valid JSON object with keys like "hydration". Example: { "hydration": 750 }',
     gitRepoPaths: [
         "c:\\Users\\jare0\\Documents\\Obsidian",
@@ -1353,13 +1353,32 @@ class OmniLoggerPlugin extends obsidian.Plugin {
                 const response = await obsidian.requestUrl({ url: sleepUrl, headers: { 'Authorization': `Bearer ${token}` } });
                 return JSON.stringify(response.json || response.text);
             } else if (t.id === 'google-hrv') {
-                const nextDate = new Date(now);
-                nextDate.setDate(now.getDate() + 1);
-                const nextDateStr = `${nextDate.getFullYear()}-${String(nextDate.getMonth() + 1).padStart(2, '0')}-${String(nextDate.getDate()).padStart(2, '0')}`;
-                const hrvFilter = `daily_heart_rate_variability.date >= "${dateStr}" AND daily_heart_rate_variability.date < "${nextDateStr}"`;
-                const hrvUrl = `https://health.googleapis.com/v4/users/me/dataTypes/daily-heart-rate-variability/dataPoints?filter=${encodeURIComponent(hrvFilter)}`;
-                const response = await obsidian.requestUrl({ url: hrvUrl, headers: { 'Authorization': `Bearer ${token}` } });
-                return JSON.stringify(response.json || response.text);
+                const hrvUrl = "https://health.googleapis.com/v4/users/me/dataTypes/daily-heart-rate-variability/dataPoints";
+                let hrvPoints = [];
+                try {
+                    let url = hrvUrl + "?pageSize=1000";
+                    while (url) {
+                        const resHrv = await obsidian.requestUrl({ url: url, headers: { 'Authorization': `Bearer ${token}` } });
+                        const points = resHrv.json?.dataPoints || [];
+                        hrvPoints.push(...points.filter(pt => {
+                            if (pt.dailyHeartRateVariability?.date) {
+                                const dObj = pt.dailyHeartRateVariability.date;
+                                const dateStr = `${dObj.year}-${String(dObj.month).padStart(2, '0')}-${String(dObj.day).padStart(2, '0')}`;
+                                return dateStr === now.toISOString().split('T')[0];
+                            }
+                            const timeStr = pt.dailyHeartRateVariability?.interval?.startTime || pt.value?.interval?.startTime || pt.startTime || "";
+                            return timeStr && timeStr >= dayStartIso && timeStr < dayEndIso;
+                        }));
+                        if (resHrv.json?.nextPageToken) {
+                            url = hrvUrl + "?pageSize=1000&pageToken=" + resHrv.json.nextPageToken;
+                        } else {
+                            url = null;
+                        }
+                    }
+                } catch(e) {
+                    console.warn("Failed to fetch HRV logs:", e);
+                }
+                return JSON.stringify({ hrvLogs: hrvPoints });
             } else if (t.id === 'google-hydration') {
                 const hydUrl = "https://health.googleapis.com/v4/users/me/dataTypes/hydration-log/dataPoints";
                 const response = await obsidian.requestUrl({ url: hydUrl, headers: { 'Authorization': `Bearer ${token}` } });
