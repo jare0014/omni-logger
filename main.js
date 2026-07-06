@@ -128,84 +128,59 @@ class OmniLoggerPlugin extends obsidian.Plugin {
         if (!this.settings.customTemplates) {
             this.settings.customTemplates = [];
         }
+    }
 
-        const defaultTemplates = [
-            {
-                id: 'calls',
-                name: 'Work Calls',
-                mode: 'ocr',
-                destination: 'frontmatter',
-                syncStyle: 'manual',
-                prompt: this.settings.omniCallsInstructions || DEFAULT_SETTINGS.omniCallsInstructions
-            },
-            {
-                id: 'lumosity',
-                name: 'Lumosity Daily Scores',
-                mode: 'ocr',
-                destination: 'frontmatter',
-                syncStyle: 'manual',
-                prompt: this.settings.omniLumosityInstructions || DEFAULT_SETTINGS.omniLumosityInstructions
-            },
-            {
-                id: 'health',
-                name: 'Fitbit Dashboard',
-                mode: 'ocr',
-                destination: 'frontmatter',
-                syncStyle: 'manual',
-                prompt: this.settings.omniHealthInstructions || DEFAULT_SETTINGS.omniHealthInstructions
-            },
-            {
+    getBuiltInGoogleTemplate(templateId) {
+        const syncConfig = this.settings.healthSyncConfig || {};
+        if (templateId === 'google-sleep') {
+            const sleepCfg = syncConfig.sleep || { enabled: true, destination: "frontmatter", key: "Sleep_hours" };
+            return {
                 id: 'google-sleep',
                 name: 'Google Sleep',
                 mode: 'api',
                 connectionId: 'google-health',
-                destination: 'frontmatter',
-                key: 'Sleep_hours',
-                syncStyle: 'manual',
-                syncInterval: 60,
+                destination: sleepCfg.destination || 'frontmatter',
+                key: sleepCfg.key || 'Sleep_hours',
                 prompt: this.settings.googleHealthSleepPrompt || DEFAULT_SETTINGS.googleHealthSleepPrompt
-            },
-            {
+            };
+        }
+        if (templateId === 'google-hrv') {
+            const hrvCfg = syncConfig.hrv || { enabled: true, destination: "frontmatter", key: "HRV" };
+            return {
                 id: 'google-hrv',
                 name: 'Google HRV',
                 mode: 'api',
                 connectionId: 'google-health',
-                destination: 'frontmatter',
-                key: 'HRV',
-                syncStyle: 'manual',
-                syncInterval: 60,
+                destination: hrvCfg.destination || 'frontmatter',
+                key: hrvCfg.key || 'HRV',
                 prompt: this.settings.googleHealthVitalsPrompt || DEFAULT_SETTINGS.googleHealthVitalsPrompt
-            },
-            {
+            };
+        }
+        if (templateId === 'google-hydration') {
+            const hydCfg = syncConfig.hydration || { enabled: true, destination: "frontmatter", key: "hydration" };
+            return {
                 id: 'google-hydration',
                 name: 'Google Hydration',
                 mode: 'api',
                 connectionId: 'google-health',
-                destination: 'frontmatter',
-                key: 'hydration',
-                syncStyle: 'manual',
-                syncInterval: 60,
+                destination: hydCfg.destination || 'frontmatter',
+                key: hydCfg.key || 'hydration',
                 prompt: this.settings.googleHealthHydrationPrompt || DEFAULT_SETTINGS.googleHealthHydrationPrompt
-            },
-            {
+            };
+        }
+        if (templateId === 'google-nutrition') {
+            const calCfg = syncConfig.calories || { enabled: false, destination: "frontmatter", key: "calories" };
+            return {
                 id: 'google-nutrition',
                 name: 'Google Nutrition',
                 mode: 'api',
                 connectionId: 'google-health',
-                destination: 'frontmatter',
-                key: 'calories',
-                syncStyle: 'manual',
-                syncInterval: 60,
+                destination: calCfg.destination || 'frontmatter',
+                key: calCfg.key || 'calories',
                 prompt: this.settings.googleHealthNutritionPrompt || DEFAULT_SETTINGS.googleHealthNutritionPrompt
-            }
-        ];
-
-        for (const defT of defaultTemplates) {
-            const wasDeleted = (this.settings.deletedBuiltInTemplates || []).includes(defT.id);
-            if (!wasDeleted && !this.settings.customTemplates.some(t => t.id === defT.id)) {
-                this.settings.customTemplates.push(defT);
-            }
+            };
         }
+        return null;
     }
 
     async onload() {
@@ -501,8 +476,7 @@ class OmniLoggerPlugin extends obsidian.Plugin {
             console.error("Failed to read templates from vault:", e);
         }
         
-        const builtIns = (this.settings.customTemplates || []).filter(t => ['calls', 'lumosity', 'health', 'google-sleep', 'google-hrv', 'google-hydration', 'google-nutrition'].includes(t.id));
-        this.settings.customTemplates = [...builtIns, ...templates];
+        this.settings.customTemplates = templates;
     }
 
     async saveCustomTemplateToVault(template, exampleInput, targetAppearance, instructions) {
@@ -1208,7 +1182,10 @@ class OmniLoggerPlugin extends obsidian.Plugin {
     async pullGoogleHealthData() {
         const googleTemplates = ['google-sleep', 'google-hrv', 'google-hydration', 'google-nutrition'];
         for (const tid of googleTemplates) {
-            const t = this.settings.customTemplates?.find(temp => temp.id === tid);
+            let t = this.settings.customTemplates?.find(temp => temp.id === tid);
+            if (!t) {
+                t = this.getBuiltInGoogleTemplate(tid);
+            }
             if (!t) continue;
             // Only pull if enabled in settings
             const cat = tid.replace('google-', '');
@@ -1236,7 +1213,10 @@ class OmniLoggerPlugin extends obsidian.Plugin {
     }
 
     async syncApiTemplate(templateId) {
-        const t = this.settings.customTemplates?.find(temp => temp.id === templateId);
+        let t = this.settings.customTemplates?.find(temp => temp.id === templateId);
+        if (!t) {
+            t = this.getBuiltInGoogleTemplate(templateId);
+        }
         if (!t || t.mode !== 'api') return;
         
         try {
@@ -1568,18 +1548,11 @@ class OmniLoggerPlugin extends obsidian.Plugin {
     }
 
     async processOCR(base64Data, mimeType, type) {
-        let prompt = "";
         const customTemplate = this.settings.customTemplates?.find(t => t.id === type);
-        
-        if (type === 'calls') {
-            prompt = this.settings.omniCallsInstructions;
-        } else if (type === 'lumosity') {
-            prompt = this.settings.omniLumosityInstructions;
-        } else if (type === 'health') {
-            prompt = this.settings.omniHealthInstructions;
-        } else if (customTemplate) {
-            prompt = customTemplate.prompt;
+        if (!customTemplate) {
+            throw new Error(`Template for type "${type}" not found.`);
         }
+        const prompt = customTemplate.prompt;
         
         const provider = this.settings.executorProvider || 'gemini';
         const model = this.settings.executorModel || 'gemini-2.5-flash';
@@ -3338,15 +3311,7 @@ class OmniLoggerSettingTab extends obsidian.PluginSettingTab {
                    });
             });
 
-            buttonsSetting.addButton(btn => {
-                btn.setButtonText("+ Create Template")
-                   .onClick(() => {
-                       new OmniTemplateCreatorModal(this.app, this.plugin, async () => {
-                           await this.plugin.loadCustomTemplatesFromVault();
-                           this.display();
-                       }, 'api-google-health').open();
-                   });
-            });
+
 
             // Collapsible OAuth Scopes configuration
             const scopesDetails = googleHealthContainer.createEl('details');
@@ -3593,6 +3558,15 @@ class OmniLoggerSettingTab extends obsidian.PluginSettingTab {
         const customLogsDetailsContainer = customLogsDetails.createDiv();
         customLogsDetailsContainer.style.paddingTop = '10px';
 
+        const creatorControlsRow = customLogsDetailsContainer.createDiv({ style: 'margin-bottom: 15px;' });
+        const createBtn = creatorControlsRow.createEl('button', { text: '+ Create New Template via LLM', cls: 'mod-cta' });
+        createBtn.onclick = () => {
+            new OmniTemplateCreatorModal(this.app, this.plugin, async () => {
+                await this.plugin.loadCustomTemplatesFromVault();
+                renderTemplates();
+            }).open();
+        };
+
         const templatesContainer = customLogsDetailsContainer.createDiv();
         const renderTemplates = () => {
             templatesContainer.empty();
@@ -3615,7 +3589,7 @@ class OmniLoggerSettingTab extends obsidian.PluginSettingTab {
                     t.prompt = configVal;
                 }
 
-                const isBuiltIn = ['calls', 'lumosity', 'health', 'google-sleep', 'google-hrv', 'google-hydration', 'google-nutrition'].includes(t.id);
+                const isBuiltIn = ['google-sleep', 'google-hrv', 'google-hydration', 'google-nutrition'].includes(t.id);
                 if (isBuiltIn) {
                     if (t.id === 'calls') this.plugin.settings.omniCallsInstructions = t.prompt;
                     else if (t.id === 'lumosity') this.plugin.settings.omniLumosityInstructions = t.prompt;
@@ -3702,7 +3676,7 @@ class OmniLoggerSettingTab extends obsidian.PluginSettingTab {
                     header.style.alignItems = 'center';
                     header.style.fontWeight = 'bold';
                     
-                    const isBuiltIn = ['calls', 'lumosity', 'health', 'google-sleep', 'google-hrv', 'google-hydration', 'google-nutrition'].includes(t.id);
+                    const isBuiltIn = ['google-sleep', 'google-hrv', 'google-hydration', 'google-nutrition'].includes(t.id);
                     const titleSpan = header.createSpan({ text: `${t.name} (${(t.mode||'').toUpperCase()})` });
                     if (isBuiltIn) {
                         header.createSpan({ 
@@ -4065,37 +4039,15 @@ class OmniLoggerSettingTab extends obsidian.PluginSettingTab {
         };
         renderTemplates();
 
-        // Template creator controls row
-        const creatorControlsRow = customLogsDetailsContainer.createDiv({ style: 'display:flex; gap:10px; margin-top:10px; align-items:center;' });
-        
-        const createBtn = creatorControlsRow.createEl('button', { text: '+ Create New Template via LLM', cls: 'mod-cta' });
-        
-        const sourceOptionSelect = creatorControlsRow.createEl('select');
-        sourceOptionSelect.createEl('option', { value: 'ocr', text: '📷 Manual Screenshot (OCR)' });
-        sourceOptionSelect.createEl('option', { value: 'api-google-health', text: '🔗 Google Health' });
-        customApiConns.forEach(conn => {
-            sourceOptionSelect.createEl('option', { value: `api-${conn.id}`, text: `🔌 Connection: ${conn.name}` });
-        });
-        const pairedBLEs = this.plugin.listPairedDevices();
-        pairedBLEs.forEach(d => {
-            sourceOptionSelect.createEl('option', { value: `ble-${d.name}`, text: `🦷 BLE: ${d.name}` });
-        });
 
-        createBtn.onclick = () => {
-            const preSel = sourceOptionSelect.value;
-            new OmniTemplateCreatorModal(this.app, this.plugin, async () => {
-                await this.plugin.loadCustomTemplatesFromVault();
-                renderTemplates();
-            }, preSel).open();
-        };
     }
 }
 class OmniLoggerModal extends obsidian.Modal {
     constructor(app, plugin) {
         super(app);
         this.plugin = plugin;
-        this.selectedType = 'calls';
-        this.selectedMode = 'ocr';
+        this.selectedType = "";
+        this.selectedMode = "ocr";
         this.pastedImageBase64 = null;
         this.apiInputText = "";
     }
@@ -4113,16 +4065,29 @@ class OmniLoggerModal extends obsidian.Modal {
         
         selectorRow.createSpan({ text: 'Log Type: ' });
         const typeSelect = selectorRow.createEl('select');
-        typeSelect.createEl('option', { value: 'calls', text: 'Work Calls' });
-        typeSelect.createEl('option', { value: 'lumosity', text: 'Lumosity Daily Scores' });
-        typeSelect.createEl('option', { value: 'health', text: 'Google Health/Vitals' });
         
+        let defaultType = "";
+        let defaultMode = "ocr";
         if (this.plugin.settings.customTemplates) {
-            for (const t of this.plugin.settings.customTemplates) {
-                typeSelect.createEl('option', { value: t.id, text: `[Custom] ${t.name}` });
+            const allowedTemplates = this.plugin.settings.customTemplates.filter(t => 
+                !['google-sleep', 'google-hrv', 'google-hydration', 'google-nutrition'].includes(t.id)
+            );
+            for (const t of allowedTemplates) {
+                typeSelect.createEl('option', { value: t.id, text: t.name });
+                if (!defaultType) {
+                    defaultType = t.id;
+                    defaultMode = t.mode || 'ocr';
+                }
             }
         }
-        typeSelect.value = this.selectedType;
+        
+        if (this.plugin.settings.customTemplates?.some(t => t.id === this.selectedType)) {
+            typeSelect.value = this.selectedType;
+        } else {
+            this.selectedType = defaultType;
+            this.selectedMode = defaultMode;
+            typeSelect.value = defaultType;
+        }
         
         selectorRow.createSpan({ text: '  Mode: ' });
         const modeSelect = selectorRow.createEl('select');
@@ -4295,30 +4260,22 @@ class OmniLoggerModal extends obsidian.Modal {
                     new obsidian.Notice("Successfully logged scores/counts to Daily Note!");
                     setTimeout(() => this.close(), 1500);
                 } else {
-                    if (this.selectedType === 'health') {
-                        statusBar.setText('Calling Google Health API...');
-                        await this.plugin.pullGoogleHealthData();
-                        statusBar.setText('Successfully pulled Google Health data!');
-                        new obsidian.Notice("Successfully synced health stats from Google API!");
+                    const customTemplate = this.plugin.settings.customTemplates?.find(t => t.id === this.selectedType);
+                    if (customTemplate && customTemplate.mode === 'api') {
+                        if (!this.apiInputText || !this.apiInputText.trim()) {
+                            new obsidian.Notice("Please enter API text first!");
+                            statusBar.setText('Error: No text provided.');
+                            processBtn.disabled = false;
+                            return;
+                        }
+                        statusBar.setText(`Processing via "${customTemplate.name}" template...`);
+                        await this.plugin.processCustomAPI(this.apiInputText, this.selectedType);
+                        statusBar.setText('Successfully logged data from API!');
+                        new obsidian.Notice("Successfully logged data from API!");
                         setTimeout(() => this.close(), 1500);
                     } else {
-                        const customTemplate = this.plugin.settings.customTemplates?.find(t => t.id === this.selectedType);
-                        if (customTemplate && customTemplate.mode === 'api') {
-                            if (!this.apiInputText || !this.apiInputText.trim()) {
-                                new obsidian.Notice("Please enter API text first!");
-                                statusBar.setText('Error: No text provided.');
-                                processBtn.disabled = false;
-                                return;
-                            }
-                            statusBar.setText(`Processing via "${customTemplate.name}" template...`);
-                            await this.plugin.processCustomAPI(this.apiInputText, this.selectedType);
-                            statusBar.setText('Successfully logged data from API!');
-                            new obsidian.Notice("Successfully logged scores/counts to Daily Note!");
-                            setTimeout(() => this.close(), 1500);
-                        } else {
-                            statusBar.setText('Unsupported configuration.');
-                            processBtn.disabled = false;
-                        }
+                        statusBar.setText('Unsupported configuration.');
+                        processBtn.disabled = false;
                     }
                 }
             } catch (err) {
