@@ -1278,7 +1278,10 @@ class OmniLoggerPlugin extends obsidian.Plugin {
                     const cfg = syncConfig[sub] || { enabled: true, destination: "frontmatter", key: sub };
                     if (cfg.enabled) {
                         const key = cfg.key || sub;
-                        const val = extracted[sub] || extracted[sub.toUpperCase()] || extracted[sub.charAt(0).toUpperCase() + sub.slice(1)] || "";
+                        let val = extracted[sub];
+                        if (val === undefined) val = extracted[sub.toUpperCase()];
+                        if (val === undefined) val = extracted[sub.charAt(0).toUpperCase() + sub.slice(1)];
+                        
                         if (val !== undefined && val !== "") {
                             dataToWrite[key] = val;
                         }
