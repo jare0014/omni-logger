@@ -525,6 +525,10 @@ class OmniLoggerPlugin extends obsidian.Plugin {
             metadata.metrics = template.metrics;
             metadata.syncStyle = template.syncStyle || "manual";
             metadata.syncInterval = template.syncInterval || 15;
+        } else if (template.mode === 'api') {
+            metadata.connectionId = template.connectionId;
+            metadata.syncStyle = template.syncStyle || "manual";
+            metadata.syncInterval = template.syncInterval || 60;
         }
         fs.writeFileSync(path.join(dirPath, 'metadata.json'), JSON.stringify(metadata, null, 2), 'utf8');
         
@@ -574,6 +578,9 @@ class OmniLoggerPlugin extends obsidian.Plugin {
         try {
             const data = JSON.parse(fs.readFileSync(metaBindPath, 'utf8'));
             if (!data.buttonTemplates) data.buttonTemplates = [];
+            
+            const btnId = `${t.id}-btn`;
+            let existing = data.buttonTemplates.find(b => b.id === btnId);
             
             const label = t.mode === 'ble' ? `Sync ${t.name}` : `Log ${t.name}`;
             const icon = t.mode === 'ble' ? 'battery-charging' : 'clipboard-list';
