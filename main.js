@@ -3545,7 +3545,7 @@ class OmniLoggerSettingTab extends obsidian.PluginSettingTab {
 
             const testBtn = controlsRow.createEl('button', { text: 'Test Connection' });
             testBtn.onclick = async () => {
-                testBtn.setButtonText("Testing...");
+                testBtn.textContent = "Testing...";
                 try {
                     const responseText = await this.plugin.fetchFromApiConnection(c.id);
                     new obsidian.Notice(`Connection success! Payload length: ${responseText.length}`);
@@ -3554,7 +3554,7 @@ class OmniLoggerSettingTab extends obsidian.PluginSettingTab {
                     new obsidian.Notice(`Connection failed: ${e.message}`);
                     updateBadge(apiStatusBadge, false, 'Error');
                 } finally {
-                    testBtn.setButtonText("Test Connection");
+                    testBtn.textContent = "Test Connection";
                 }
             };
 
