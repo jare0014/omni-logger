@@ -5632,14 +5632,7 @@ class OmniApiWizardModal extends obsidian.Modal {
             .setDesc('The endpoint url to request')
             .addText(text => text.onChange(val => this.url = val.trim()));
 
-        new obsidian.Setting(formContainer)
-            .setName('HTTP Method')
-            .addDropdown(dropdown => dropdown
-                .addOption('GET', 'GET')
-                .addOption('POST', 'POST')
-                .setValue(this.method)
-                .onChange(val => this.method = val)
-            );
+
 
         new obsidian.Setting(formContainer)
             .setName('Authorization Type')
