@@ -2827,17 +2827,69 @@ class OmniLoggerSettingTab extends obsidian.PluginSettingTab {
         }
 
         // =====================================================================
-        // 2. 🔌 API & DEVICE CONNECTIONS (Middle)
+        // 2. 🔌 SOURCES (Middle)
         // =====================================================================
         containerEl.createEl('hr');
         
         const connectionsHeader = containerEl.createDiv({ style: 'display:flex; justify-content:space-between; align-items:center; margin-bottom:15px;' });
-        connectionsHeader.createEl('h3', { text: '🔌 API & Device Connections', style: 'margin:0;' });
+        connectionsHeader.createEl('h3', { text: '🔌 Sources', style: 'margin:0;' });
         
         const addApiBtn = connectionsHeader.createEl('button', { text: '+ Add API Connection', cls: 'mod-cta' });
         addApiBtn.onclick = () => {
             new OmniApiWizardModal(this.app, this.plugin, () => this.display()).open();
         };
+
+        // ── Card C: Git Logger Integration (Collapsible) ─────────────────────
+        const gitLoggerDetails = containerEl.createEl('details');
+        gitLoggerDetails.style.marginBottom = '15px';
+        gitLoggerDetails.style.border = '1px solid var(--background-modifier-border)';
+        gitLoggerDetails.style.borderRadius = '6px';
+        gitLoggerDetails.style.padding = '8px';
+        
+        const gitLoggerSummary = gitLoggerDetails.createEl('summary', { text: '🐙 Git Activity Logger' });
+        gitLoggerSummary.style.cursor = 'pointer';
+        gitLoggerSummary.style.fontSize = '1.2em';
+        gitLoggerSummary.style.fontWeight = 'bold';
+        gitLoggerSummary.style.color = 'var(--text-accent)';
+        
+        const gitLoggerDetailsContainer = gitLoggerDetails.createDiv();
+        gitLoggerDetailsContainer.style.paddingTop = '10px';
+        
+        new obsidian.Setting(gitLoggerDetailsContainer)
+            .setName('Repository Paths')
+            .setDesc('Enter the absolute folder paths of the git repositories you want to track, one path per line.')
+            .addTextArea(text => {
+                text.setPlaceholder('C:\\path\\to\\repo1\nC:\\path\\to\\repo2')
+                    .setValue(this.plugin.settings.gitRepoPaths || '')
+                    .onChange(async (value) => {
+                        this.plugin.settings.gitRepoPaths = value;
+                        await this.plugin.saveSettings();
+                    });
+                text.inputEl.rows = 6;
+                text.inputEl.style.width = '100%';
+            });
+
+        new obsidian.Setting(gitLoggerDetailsContainer)
+            .setName('Git Author Filter')
+            .setDesc('Only track commits by this author (optional, leave empty to track all commits).')
+            .addText(text => text
+                .setPlaceholder('e.g., John Doe')
+                .setValue(this.plugin.settings.gitAuthor || '')
+                .onChange(async (value) => {
+                    this.plugin.settings.gitAuthor = value.trim();
+                    await this.plugin.saveSettings();
+                }));
+
+        new obsidian.Setting(gitLoggerDetailsContainer)
+            .setName('Log Section Heading')
+            .setDesc('The heading in your daily note under which the Git Activity section will be placed.')
+            .addText(text => text
+                .setPlaceholder('## 🪵 Log')
+                .setValue(this.plugin.settings.gitTargetHeading || '## 🪵 Log')
+                .onChange(async (value) => {
+                    this.plugin.settings.gitTargetHeading = value.trim();
+                    await this.plugin.saveSettings();
+                }));
 
         // ── Card A: Google Health API Connection ─────────────────────────────
         const googleHealthDetails = containerEl.createEl('details');
@@ -3080,7 +3132,7 @@ class OmniLoggerSettingTab extends obsidian.PluginSettingTab {
         }
 
         // ── Cards B+: Custom API Connections Dashboard ───────────────────────
-        const customApiConns = this.plugin.settings.apiConnections || [];
+        const customApiConns = (this.plugin.settings.apiConnections || []).filter(c => c.id !== 'google-health');
         customApiConns.forEach(c => {
             const apiDetails = containerEl.createEl('details');
             apiDetails.style.marginBottom = '15px';
@@ -3310,10 +3362,10 @@ class OmniLoggerSettingTab extends obsidian.PluginSettingTab {
             );
 
         // =====================================================================
-        // 3. 📋 LOG TEMPLATES & GIT SETTINGS (Bottom)
+        // 3. 📋 LOG TEMPLATES & SETTINGS (Bottom)
         // =====================================================================
         containerEl.createEl('hr');
-        containerEl.createEl('h3', { text: '📋 Log Templates & Git Settings' });
+        containerEl.createEl('h3', { text: '📋 Log Templates & Settings' });
 
         // Ingredients Folder
         new obsidian.Setting(containerEl)
@@ -3808,57 +3860,6 @@ class OmniLoggerSettingTab extends obsidian.PluginSettingTab {
                 text.inputEl.style.width = '100%';
             });
 
-        // ── Card C: Git Logger Integration (Collapsible) ─────────────────────
-        const gitLoggerDetails = containerEl.createEl('details');
-        gitLoggerDetails.style.marginBottom = '20px';
-        gitLoggerDetails.style.border = '1px solid var(--background-modifier-border)';
-        gitLoggerDetails.style.borderRadius = '6px';
-        gitLoggerDetails.style.padding = '8px';
-        
-        const gitLoggerSummary = gitLoggerDetails.createEl('summary', { text: '🐙 Git Activity Logger' });
-        gitLoggerSummary.style.cursor = 'pointer';
-        gitLoggerSummary.style.fontSize = '1.2em';
-        gitLoggerSummary.style.fontWeight = 'bold';
-        gitLoggerSummary.style.color = 'var(--text-accent)';
-        
-        const gitLoggerDetailsContainer = gitLoggerDetails.createDiv();
-        gitLoggerDetailsContainer.style.paddingTop = '10px';
-        
-        new obsidian.Setting(gitLoggerDetailsContainer)
-            .setName('Repository Paths')
-            .setDesc('Enter the absolute folder paths of the git repositories you want to track, one path per line.')
-            .addTextArea(text => {
-                text.setPlaceholder('C:\\path\\to\\repo1\nC:\\path\\to\\repo2')
-                    .setValue(this.plugin.settings.gitRepoPaths || '')
-                    .onChange(async (value) => {
-                        this.plugin.settings.gitRepoPaths = value;
-                        await this.plugin.saveSettings();
-                    });
-                text.inputEl.rows = 6;
-                text.inputEl.style.width = '100%';
-            });
-
-        new obsidian.Setting(gitLoggerDetailsContainer)
-            .setName('Git Author Filter')
-            .setDesc('Only track commits by this author (optional, leave empty to track all commits).')
-            .addText(text => text
-                .setPlaceholder('e.g., John Doe')
-                .setValue(this.plugin.settings.gitAuthor || '')
-                .onChange(async (value) => {
-                    this.plugin.settings.gitAuthor = value.trim();
-                    await this.plugin.saveSettings();
-                }));
-
-        new obsidian.Setting(gitLoggerDetailsContainer)
-            .setName('Log Section Heading')
-            .setDesc('The heading in your daily note under which the Git Activity section will be placed.')
-            .addText(text => text
-                .setPlaceholder('## 🪵 Log')
-                .setValue(this.plugin.settings.gitTargetHeading || '## 🪵 Log')
-                .onChange(async (value) => {
-                    this.plugin.settings.gitTargetHeading = value.trim();
-                    await this.plugin.saveSettings();
-                }));
     }
 }
 class OmniLoggerModal extends obsidian.Modal {
