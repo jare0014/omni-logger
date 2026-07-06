@@ -11,15 +11,17 @@ Instead of writing custom scripts for every integration, Omni-Logger provides a 
 Omni-Logger operates across three decoupled layers:
 
 ```
-[ Sources Layer ]                [ Parsing Layer ]            [ Storage Adapter Layer ]
-- Git repositories              - Google Gemini              - YAML Frontmatter
-- Google Health API (OAuth2)    - Local Ollama (Offline)     - Dataview Inline (key:: val)
-- Bluetooth BLE Beacons                                      - Appended Daily Logs
-- Custom HTTP APIs (Wizard)
+[ Sources Layer ]                [ Ingestion & Parsing ]         [ Storage Adapter Layer ]
+- Git repositories              - Deterministic Parsers         - YAML Frontmatter
+- Google Health API (OAuth2)      (Bypass for Health/Vitals)    - Dataview Inline (key:: val)
+- Bluetooth BLE Beacons         - LLM Extraction (Ollama/Gemini)- Appended Daily Logs
+- Custom HTTP APIs (Wizard)       (For OCR & Custom APIs)
 ```
 
 1. **Sources Layer (Ingestion)**: Collects data from built-in or custom sources (APIs, BLE devices, local git folders, or clipboard screenshot OCR).
-2. **Parsing Layer (LLM Routing)**: Feeds raw payloads (images, JSON, or text) to cloud-based **Google Gemini** or local offline **Ollama** models using custom instructions.
+2. **Parsing & Ingestion Layer**: 
+   - **Deterministic Bypasses**: For built-in Google Health biometrics (Sleep, HRV, Hydration, Nutrition), data is parsed locally in JavaScript using precise mathematical and timezone offset logic to ensure **100% accuracy and zero AI hallucinations**.
+   - **LLM-Routed Extraction**: For custom HTTP APIs and clipboard OCR images, raw payloads are routed to **Google Gemini** or local offline **Ollama** models for fuzzy text extraction.
 3. **Storage Adapter Layer (Obsidian Write)**: Maps the extracted key-value parameters into your Obsidian Daily Note (YAML Frontmatter properties, inline Dataview fields, or appended section logs).
 
 ---
@@ -28,8 +30,8 @@ Omni-Logger operates across three decoupled layers:
 
 *   **Custom API Wizard**: Easily add any HTTP API connection. Supports custom endpoint methods, custom headers, and token/credential authentication types (None, API Key, OAuth 2.0).
 *   **Modal BLE Device Manager**: Discover, pair, and configure Bluetooth Low Energy (BLE) devices (like smart rings or bands) using a background helper. Supports custom GATT / challenge-response handshakes and metrics parsing.
-*   **Google Health Sync (Pre-configured)**: Built-in OAuth 2.0 connection to pull sleep, HRV, vitals, nutrition, and hydration biometrics into Obsidian.
-*   **Clipboard / OCR Ingestion**: Monitor your clipboard for screenshots (e.g., call logs, Lumosity workouts, fitness apps) and automatically parse and log metrics.
+*   **Google Health Sync (Pre-configured)**: Built-in OAuth 2.0 connection to pull sleep, HRV, vitals, nutrition, and hydration biometrics. It parses the payloads programmatically, keeping unlogged metrics (like alcohol or protein) clean as `Empty` instead of overwriting them with zeros.
+*   **Clipboard / OCR Ingestion**: Monitor your clipboard for screenshots (e.g., call logs, Lumosity workouts, fitness apps) and automatically parse and log metrics via Gemini or Ollama.
 *   **Local Git Activity Logger**: Aggregates native `git log` commit history across configured local repositories in the background to log your daily developer progress.
 *   **On-The-Fly Settings**: Adjust sync styles (Manual vs. Automatic polling) and frequencies on the fly from the settings registry. Changes are saved immediately to both plugin settings and vault metadata templates.
 
@@ -59,9 +61,10 @@ To enable Fitbit and Google Health sync:
 3. Configure your OAuth consent screen and add these scopes:
    - `https://www.googleapis.com/auth/googlehealth.sleep.readonly`
    - `https://www.googleapis.com/auth/googlehealth.health_metrics_and_measurements.readonly`
-   - `https://www.googleapis.com/auth/googlehealth.nutrition` (nutrition, hydration, and alcohol)
+   - `https://www.googleapis.com/auth/googlehealth.nutrition.readonly`
+   - `https://www.googleapis.com/auth/googlehealth.nutrition.writeonly`
 4. Create an **OAuth Web Client ID** and set the redirect URL to:
-   `http://localhost:8082` (or your configured redirect port).
+   `http://localhost:8092`
 5. In Obsidian Settings -> **Omni-Logger**, enter your Client ID and Client Secret, choose your sync scopes, and click **Connect Google Account**.
 
 ### 4. Creating Custom API Connections & Templates
