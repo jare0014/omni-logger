@@ -1373,22 +1373,45 @@ class OmniLoggerPlugin extends obsidian.Plugin {
                 const alcUrl = "https://health.googleapis.com/v4/users/me/dataTypes/alcohol-consumption/dataPoints";
                 let nutPoints = [];
                 let alcPoints = [];
+                
                 try {
-                    const resNut = await obsidian.requestUrl({ url: nutritionUrl, headers: { 'Authorization': `Bearer ${token}` } });
-                    const points = resNut.json?.dataPoints || [];
-                    nutPoints = points.filter(pt => {
-                        const timeStr = pt.nutritionLog?.interval?.startTime || pt.value?.interval?.startTime || "";
-                        return timeStr && timeStr >= dayStartIso && timeStr <= dayEndIso;
-                    });
-                } catch(e) {}
+                    let url = nutritionUrl + "?pageSize=1000";
+                    while (url) {
+                        const resNut = await obsidian.requestUrl({ url: url, headers: { 'Authorization': `Bearer ${token}` } });
+                        const points = resNut.json?.dataPoints || [];
+                        nutPoints.push(...points.filter(pt => {
+                            const timeStr = pt.nutritionLog?.interval?.startTime || pt.value?.interval?.startTime || "";
+                            return timeStr && timeStr >= dayStartIso && timeStr <= dayEndIso;
+                        }));
+                        if (resNut.json?.nextPageToken) {
+                            url = nutritionUrl + "?pageSize=1000&pageToken=" + resNut.json.nextPageToken;
+                        } else {
+                            url = null;
+                        }
+                    }
+                } catch(e) {
+                    console.warn("Failed to fetch nutrition logs:", e);
+                }
+                
                 try {
-                    const resAlc = await obsidian.requestUrl({ url: alcUrl, headers: { 'Authorization': `Bearer ${token}` } });
-                    const points = resAlc.json?.dataPoints || [];
-                    alcPoints = points.filter(pt => {
-                        const timeStr = pt.alcoholConsumption?.interval?.startTime || pt.value?.interval?.startTime || "";
-                        return timeStr && timeStr >= dayStartIso && timeStr <= dayEndIso;
-                    });
-                } catch(e) {}
+                    let url = alcUrl + "?pageSize=1000";
+                    while (url) {
+                        const resAlc = await obsidian.requestUrl({ url: url, headers: { 'Authorization': `Bearer ${token}` } });
+                        const points = resAlc.json?.dataPoints || [];
+                        alcPoints.push(...points.filter(pt => {
+                            const timeStr = pt.alcoholConsumption?.interval?.startTime || pt.value?.interval?.startTime || "";
+                            return timeStr && timeStr >= dayStartIso && timeStr <= dayEndIso;
+                        }));
+                        if (resAlc.json?.nextPageToken) {
+                            url = alcUrl + "?pageSize=1000&pageToken=" + resAlc.json.nextPageToken;
+                        } else {
+                            url = null;
+                        }
+                    }
+                } catch(e) {
+                    console.warn("Failed to fetch alcohol logs:", e);
+                }
+                
                 return JSON.stringify({ nutritionLogs: nutPoints, alcoholConsumptionLogs: alcPoints });
             }
         }
