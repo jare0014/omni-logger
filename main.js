@@ -1209,8 +1209,20 @@ class OmniLoggerPlugin extends obsidian.Plugin {
             if (!t) continue;
             // Only pull if enabled in settings
             const cat = tid.replace('google-', '');
-            const cfg = this.settings.healthSyncConfig?.[cat];
-            if (cfg && cfg.enabled !== false) {
+            
+            let isEnabled = false;
+            if (cat === 'nutrition') {
+                const subMetrics = ['caffeine', 'alcohol', 'calories', 'protein'];
+                isEnabled = subMetrics.some(sub => {
+                    const subCfg = this.settings.healthSyncConfig?.[sub];
+                    return !subCfg || subCfg.enabled !== false;
+                });
+            } else {
+                const cfg = this.settings.healthSyncConfig?.[cat];
+                isEnabled = !cfg || cfg.enabled !== false;
+            }
+            
+            if (isEnabled) {
                 try {
                     await this.syncApiTemplate(tid);
                 } catch(e) {
