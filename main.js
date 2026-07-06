@@ -307,61 +307,70 @@ class OmniLoggerPlugin extends obsidian.Plugin {
         }
     }
 
-    registerCustomTemplateCommands() {
+    registerSingleTemplateCommand(t) {
         const path = require('path');
         const vaultPath = this.app.vault.adapter.getBasePath();
         const folderName = this.settings.ingredientsFolder || 'Omni_Templates';
         
-        for (const t of this.settings.customTemplates) {
-            this.addCommand({
-                id: `run-template-${t.id}`,
-                name: `Sync BLE/Metrics: ${t.name}`,
-                callback: () => {
-                    if (t.mode === 'ble') {
-                        const cleanDirName = t.name.replace(/[^a-zA-Z0-9 _-]/g, '');
-                        const absoluteTemplatePath = path.join(vaultPath, folderName, cleanDirName);
-                        
-                        const dailyFile = this.getDailyNoteFile();
-                        if (!dailyFile) {
-                            new obsidian.Notice("Daily note not found!");
-                            return;
-                        }
-                        const absoluteDailyPath = path.join(vaultPath, dailyFile.path);
-                        
-                        new obsidian.Notice(`Starting BLE sync for ${t.name}...`);
-                        this.runPythonScript('log_ble.py', `--template-dir "${absoluteTemplatePath}" --file "${absoluteDailyPath}"`);
-                    } else if (t.mode === 'connection') {
-                        const cleanDirName = t.name.replace(/[^a-zA-Z0-9 _-]/g, '').trim();
-                        const dirFolderName = cleanDirName.toLowerCase().replace(/[^a-z0-9]/g, '-');
-                        const connectionFolder = path.join(vaultPath, '99_System', 'Omni_Connections', dirFolderName);
-                        
-                        const dailyFile = this.getDailyNoteFile();
-                        if (!dailyFile) {
-                            new obsidian.Notice("Daily note not found!");
-                            return;
-                        }
-                        const absoluteDailyPath = path.join(vaultPath, dailyFile.path);
-                        
-                        new obsidian.Notice(`Executing API caller for ${t.name}...`);
-                        this.runPythonScript(path.join(connectionFolder, 'caller.py'), "", true).then(() => {
-                            new obsidian.Notice(`Mapping metrics for ${t.name}...`);
-                            return this.runPythonScript(path.join(connectionFolder, 'sync.py'), `"${absoluteDailyPath}"`, true);
-                        }).then(() => {
-                            new obsidian.Notice(`Sync complete for ${t.name}!`);
-                        }).catch(err => {
-                            new obsidian.Notice(`Connection sync failed for ${t.name}: ${err.message}`);
-                        });
-                    } else if (t.mode === 'api') {
-                        new obsidian.Notice(`Syncing API connection for ${t.name}...`);
-                        this.syncApiTemplate(t.id);
-                    } else {
-                        const modal = new OmniLoggerModal(this.app, this);
-                        modal.selectedType = t.id;
-                        modal.selectedMode = t.mode;
-                        modal.open();
+        const fullId = `omni-logger:run-template-${t.id}`;
+        if (this.app.commands?.commands?.[fullId]) {
+            delete this.app.commands.commands[fullId];
+        }
+        
+        this.addCommand({
+            id: `run-template-${t.id}`,
+            name: `Sync BLE/Metrics: ${t.name}`,
+            callback: () => {
+                if (t.mode === 'ble') {
+                    const cleanDirName = t.name.replace(/[^a-zA-Z0-9 _-]/g, '');
+                    const absoluteTemplatePath = path.join(vaultPath, folderName, cleanDirName);
+                    
+                    const dailyFile = this.getDailyNoteFile();
+                    if (!dailyFile) {
+                        new obsidian.Notice("Daily note not found!");
+                        return;
                     }
+                    const absoluteDailyPath = path.join(vaultPath, dailyFile.path);
+                    
+                    new obsidian.Notice(`Starting BLE sync for ${t.name}...`);
+                    this.runPythonScript('log_ble.py', `--template-dir "${absoluteTemplatePath}" --file "${absoluteDailyPath}"`);
+                } else if (t.mode === 'connection') {
+                    const cleanDirName = t.name.replace(/[^a-zA-Z0-9 _-]/g, '').trim();
+                    const dirFolderName = cleanDirName.toLowerCase().replace(/[^a-z0-9]/g, '-');
+                    const connectionFolder = path.join(vaultPath, '99_System', 'Omni_Connections', dirFolderName);
+                    
+                    const dailyFile = this.getDailyNoteFile();
+                    if (!dailyFile) {
+                        new obsidian.Notice("Daily note not found!");
+                        return;
+                    }
+                    const absoluteDailyPath = path.join(vaultPath, dailyFile.path);
+                    
+                    new obsidian.Notice(`Executing API caller for ${t.name}...`);
+                    this.runPythonScript(path.join(connectionFolder, 'caller.py'), "", true).then(() => {
+                        new obsidian.Notice(`Mapping metrics for ${t.name}...`);
+                        return this.runPythonScript(path.join(connectionFolder, 'sync.py'), `"${absoluteDailyPath}"`, true);
+                    }).then(() => {
+                        new obsidian.Notice(`Sync complete for ${t.name}!`);
+                    }).catch(err => {
+                        new obsidian.Notice(`Connection sync failed for ${t.name}: ${err.message}`);
+                    });
+                } else if (t.mode === 'api') {
+                    new obsidian.Notice(`Syncing API connection for ${t.name}...`);
+                    this.syncApiTemplate(t.id);
+                } else {
+                    const modal = new OmniLoggerModal(this.app, this);
+                    modal.selectedType = t.id;
+                    modal.selectedMode = t.mode;
+                    modal.open();
                 }
-            });
+            }
+        });
+    }
+
+    registerCustomTemplateCommands() {
+        for (const t of this.settings.customTemplates) {
+            this.registerSingleTemplateCommand(t);
         }
     }
 
@@ -544,6 +553,9 @@ class OmniLoggerPlugin extends obsidian.Plugin {
         
         // Reload templates
         await this.loadCustomTemplatesFromVault();
+        
+        // Dynamically register the command with Obsidian
+        this.registerSingleTemplateCommand(template);
     }
 
     async deleteCustomTemplateFromVault(templateName) {
