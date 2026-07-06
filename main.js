@@ -2639,15 +2639,15 @@ Return your response strictly as a JSON object matching this schema:
 
     async logGitHistory() {
         const path = require('path');
-        const activeFile = this.app.workspace.getActiveFile();
-        if (!activeFile) {
-            new obsidian.Notice("No active file. Please open a note first.");
+        const dailyFile = this.getDailyNoteFile();
+        if (!dailyFile) {
+            new obsidian.Notice("Daily note not found. Please open or create today's daily note.");
             return;
         }
 
-        // Detect date from active file name if format is YYYY-MM-DD.md
+        // Detect date from daily note file name if format is YYYY-MM-DD.md
         let date = this.getLocalDateString();
-        const dateMatch = activeFile.name.match(/^(\d{4}-\d{2}-\d{2})\.md$/);
+        const dateMatch = dailyFile.name.match(/^(\d{4}-\d{2}-\d{2})\.md$/);
         if (dateMatch) {
             date = dateMatch[1];
         }
@@ -2711,7 +2711,7 @@ Return your response strictly as a JSON object matching this schema:
 
         // Read active file content and parse any existing git log block
         try {
-            const content = await this.app.vault.read(activeFile);
+            const content = await this.app.vault.read(dailyFile);
             const lines = content.split('\n');
 
             let startIndex = -1;
@@ -2822,7 +2822,7 @@ Return your response strictly as a JSON object matching this schema:
                 }
             }
 
-            await this.app.vault.modify(activeFile, lines.join('\n'));
+            await this.app.vault.modify(dailyFile, lines.join('\n'));
             new obsidian.Notice(`Logged ${totalCommits} total commits (${newCommitsAdded} new) to Daily Note.`);
         } catch (e) {
             console.error("Failed to write to daily note:", e);
