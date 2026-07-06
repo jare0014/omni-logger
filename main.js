@@ -611,7 +611,7 @@ class OmniLoggerPlugin extends obsidian.Plugin {
             }
             
             fs.writeFileSync(metaBindPath, JSON.stringify(data, null, 2), 'utf8');
-            new obsidian.Notice(`Meta Bind button "${btnId}" template synchronized!`);
+            new obsidian.Notice(`Meta Bind button "${btnId}" synchronized! (Note: Reload the Meta Bind plugin or restart Obsidian to apply)`);
         } catch (e) {
             console.error("Failed to update Meta Bind button:", e);
         }
