@@ -48,7 +48,11 @@ const DEFAULT_SETTINGS = {
     gitAuthor: "",
     gitTargetHeading: "## 🪵 Log",
     autoSyncOnStartup: false,
-    enableClipboardOcr: false
+    enableClipboardOcr: false,
+    gitSyncStyle: 'manual',
+    gitSyncInterval: 60,
+    googleHealthSyncStyle: 'manual',
+    googleHealthSyncInterval: 60
 };
 
 
@@ -700,6 +704,34 @@ class OmniLoggerPlugin extends obsidian.Plugin {
                     } catch(e) {
                         console.error(`Automatic sync failed for template "${t.name}":`, e);
                     }
+                }
+            }
+        }
+
+        // Built-in Git Logger background sync
+        if (this.settings.gitSyncStyle === 'automatic') {
+            const gitInterval = this.settings.gitSyncInterval || 60;
+            const lastGitSync = this.lastSyncTimes['git'] || 0;
+            const now = Date.now();
+            if (now - lastGitSync >= gitInterval * 60 * 1000) {
+                this.lastSyncTimes['git'] = now;
+                console.log(`[Omni-Logger] Automatic background Git sync triggered`);
+                this.logGitHistory();
+            }
+        }
+
+        // Built-in Google Health background sync
+        if (this.settings.googleHealthSyncStyle === 'automatic') {
+            const healthInterval = this.settings.googleHealthSyncInterval || 60;
+            const lastHealthSync = this.lastSyncTimes['google-health'] || 0;
+            const now = Date.now();
+            if (now - lastHealthSync >= healthInterval * 60 * 1000) {
+                this.lastSyncTimes['google-health'] = now;
+                console.log(`[Omni-Logger] Automatic background Google Health sync triggered`);
+                try {
+                    await this.pullGoogleHealthData();
+                } catch(e) {
+                    console.error("Automatic Google Health sync failed:", e);
                 }
             }
         }
@@ -2983,6 +3015,41 @@ class OmniLoggerSettingTab extends obsidian.PluginSettingTab {
                     await this.plugin.saveSettings();
                 }));
 
+        new obsidian.Setting(gitLoggerDetailsContainer)
+            .setName('Sync Style')
+            .setDesc('Choose whether to sync git commits manually or automatically in the background.')
+            .addDropdown(dropdown => {
+                dropdown
+                    .addOption('manual', 'Manual (Button/Palette)')
+                    .addOption('automatic', 'Automatic (Background Polling)')
+                    .setValue(this.plugin.settings.gitSyncStyle || 'manual')
+                    .onChange(async (value) => {
+                        this.plugin.settings.gitSyncStyle = value;
+                        await this.plugin.saveSettings();
+                        toggleGitInterval();
+                    });
+            });
+
+        const gitIntervalSetting = new obsidian.Setting(gitLoggerDetailsContainer)
+            .setName('Sync Frequency (minutes)')
+            .setDesc('Time interval between background git checks.')
+            .addText(text => text
+                .setPlaceholder('60')
+                .setValue(String(this.plugin.settings.gitSyncInterval || 60))
+                .onChange(async (value) => {
+                    this.plugin.settings.gitSyncInterval = parseInt(value) || 60;
+                    await this.plugin.saveSettings();
+                }));
+
+        const toggleGitInterval = () => {
+            if (this.plugin.settings.gitSyncStyle === 'automatic') {
+                gitIntervalSetting.settingEl.style.display = '';
+            } else {
+                gitIntervalSetting.settingEl.style.display = 'none';
+            }
+        };
+        toggleGitInterval();
+
         // ── Card A: Google Health API Connection ─────────────────────────────
         const googleHealthDetails = containerEl.createEl('details');
         googleHealthDetails.style.marginBottom = '15px';
@@ -3040,6 +3107,41 @@ class OmniLoggerSettingTab extends obsidian.PluginSettingTab {
             googleHealthContainer.style.borderRadius = '8px';
             googleHealthContainer.style.marginTop = '10px';
             googleHealthContainer.style.backgroundColor = 'var(--background-secondary)';
+
+            new obsidian.Setting(googleHealthContainer)
+                .setName('Sync Style')
+                .setDesc('Choose whether to sync Google Health data manually or automatically in the background.')
+                .addDropdown(dropdown => {
+                    dropdown
+                        .addOption('manual', 'Manual (Button/Palette)')
+                        .addOption('automatic', 'Automatic (Background Polling)')
+                        .setValue(this.plugin.settings.googleHealthSyncStyle || 'manual')
+                        .onChange(async (value) => {
+                            this.plugin.settings.googleHealthSyncStyle = value;
+                            await this.plugin.saveSettings();
+                            toggleHealthInterval();
+                        });
+                });
+
+            const healthIntervalSetting = new obsidian.Setting(googleHealthContainer)
+                .setName('Sync Frequency (minutes)')
+                .setDesc('Time interval between background Google Health checks.')
+                .addText(text => text
+                    .setPlaceholder('60')
+                    .setValue(String(this.plugin.settings.googleHealthSyncInterval || 60))
+                    .onChange(async (value) => {
+                        this.plugin.settings.googleHealthSyncInterval = parseInt(value) || 60;
+                        await this.plugin.saveSettings();
+                    }));
+
+            const toggleHealthInterval = () => {
+                if (this.plugin.settings.googleHealthSyncStyle === 'automatic') {
+                    healthIntervalSetting.settingEl.style.display = '';
+                } else {
+                    healthIntervalSetting.settingEl.style.display = 'none';
+                }
+            };
+            toggleHealthInterval();
 
             // Local registry management tools
             const registryToolsRow = googleHealthContainer.createDiv({ style: 'display:flex; justify-content:space-between; align-items:center; margin-bottom:15px; padding:10px; border:1px solid var(--text-accent); border-radius:6px; background:rgba(var(--color-accent), 0.05);' });
@@ -3469,6 +3571,58 @@ class OmniLoggerSettingTab extends obsidian.PluginSettingTab {
         const renderTemplates = () => {
             templatesContainer.empty();
             const templates = this.plugin.settings.customTemplates || [];
+
+            const saveTemplateOnTheFly = async (t, destVal, styleVal, intervalVal, deviceVal, configVal) => {
+                t.destination = destVal;
+                if (styleVal !== undefined) t.syncStyle = styleVal;
+                if (intervalVal !== undefined) t.syncInterval = intervalVal;
+                if (deviceVal !== undefined) t.deviceName = deviceVal;
+                
+                if (t.mode === 'ble') {
+                    try {
+                        const parsedConfig = JSON.parse(configVal);
+                        Object.assign(t, parsedConfig);
+                    } catch(e) {}
+                } else {
+                    t.prompt = configVal;
+                }
+
+                // Save to settings
+                await this.plugin.saveSettings();
+
+                // Save to vault file
+                const cleanDirName = t.name.replace(/[^a-zA-Z0-9 _-]/g, '');
+                const metadataPath = `${this.app.vault.adapter.getBasePath()}/${this.plugin.settings.ingredientsFolder}/${cleanDirName}/metadata.json`;
+                const fs = require('fs');
+                
+                try {
+                    let m = {};
+                    if (fs.existsSync(metadataPath)) {
+                        m = JSON.parse(fs.readFileSync(metadataPath, 'utf8'));
+                    }
+                    m.id = t.id;
+                    m.name = t.name;
+                    m.mode = t.mode;
+                    m.destination = t.destination;
+                    m.syncStyle = t.syncStyle;
+                    m.syncInterval = t.syncInterval;
+                    if (t.mode === 'ble') {
+                        m.deviceName = t.deviceName || '';
+                        m.metrics = t.metrics || [];
+                    } else {
+                        m.connectionId = t.connectionId;
+                        m.prompt = t.prompt;
+                    }
+                    const dirPath = `${this.app.vault.adapter.getBasePath()}/${this.plugin.settings.ingredientsFolder}/${cleanDirName}`;
+                    if (!fs.existsSync(dirPath)) {
+                        fs.mkdirSync(dirPath, { recursive: true });
+                    }
+                    fs.writeFileSync(metadataPath, JSON.stringify(m, null, 2), 'utf8');
+                    await this.plugin.updateMetaBindButton(t);
+                } catch(e) {
+                    console.error("Failed to sync template configuration file on the fly:", e);
+                }
+            };
             
             if (templates.length === 0) {
                 templatesContainer.createEl('p', { text: 'No custom templates found. Click below to generate one!', cls: 'setting-item-description' });
@@ -3526,7 +3680,10 @@ class OmniLoggerSettingTab extends obsidian.PluginSettingTab {
                             templateDeviceSelect.value = t.deviceName || '';
                         };
                         repopulateDeviceSelect();
-                        templateDeviceSelect.onchange = () => { t.deviceName = templateDeviceSelect.value; };
+                        templateDeviceSelect.onchange = async () => {
+                            t.deviceName = templateDeviceSelect.value;
+                            await saveTemplateOnTheFly(t, destSelect.value, styleSelect ? styleSelect.value : undefined, intervalInput ? (parseInt(intervalInput.value) || 15) : undefined, templateDeviceSelect.value, configArea.value);
+                        };
 
                         if (!this.plugin.listPairedDevices().length) {
                             deviceRow.createSpan({ text: 'No paired devices — pair one in Settings above.', style: 'color:var(--text-muted); font-size:0.85em;' });
@@ -3598,15 +3755,21 @@ class OmniLoggerSettingTab extends obsidian.PluginSettingTab {
                             }
                         };
                         
-                        styleSelect.onchange = () => {
+                        styleSelect.onchange = async () => {
                             toggleInterval();
                             updateConfigArea();
+                            await saveTemplateOnTheFly(t, destSelect.value, styleSelect.value, parseInt(intervalInput.value) || 15, templateDeviceSelect.value, configArea.value);
                         };
-                        intervalInput.onchange = () => {
+                        intervalInput.onchange = async () => {
                             updateConfigArea();
+                            await saveTemplateOnTheFly(t, destSelect.value, styleSelect.value, parseInt(intervalInput.value) || 15, templateDeviceSelect.value, configArea.value);
                         };
-                        destSelect.onchange = () => {
+                        destSelect.onchange = async () => {
                             updateConfigArea();
+                            await saveTemplateOnTheFly(t, destSelect.value, styleSelect.value, parseInt(intervalInput.value) || 15, templateDeviceSelect.value, configArea.value);
+                        };
+                        configArea.onchange = async () => {
+                            await saveTemplateOnTheFly(t, destSelect.value, styleSelect.value, parseInt(intervalInput.value) || 15, templateDeviceSelect.value, configArea.value);
                         };
                         
                         toggleInterval();
@@ -3685,16 +3848,29 @@ class OmniLoggerSettingTab extends obsidian.PluginSettingTab {
                                 }
                             };
 
-                            styleSelect.onchange = () => {
+                            styleSelect.onchange = async () => {
                                 t.syncStyle = styleSelect.value;
                                 toggleInterval();
+                                await saveTemplateOnTheFly(t, destSelect.value, styleSelect.value, parseInt(intervalInput.value) || 60, undefined, promptArea.value);
                             };
-                            intervalInput.onchange = () => {
+                            intervalInput.onchange = async () => {
                                 t.syncInterval = parseInt(intervalInput.value) || 60;
+                                await saveTemplateOnTheFly(t, destSelect.value, styleSelect.value, parseInt(intervalInput.value) || 60, undefined, promptArea.value);
                             };
 
                             toggleInterval();
                         }
+
+                        destSelect.onchange = async () => {
+                            const sVal = styleSelect ? styleSelect.value : undefined;
+                            const iVal = intervalInput ? (parseInt(intervalInput.value) || 60) : undefined;
+                            await saveTemplateOnTheFly(t, destSelect.value, sVal, iVal, undefined, promptArea.value);
+                        };
+                        promptArea.onchange = async () => {
+                            const sVal = styleSelect ? styleSelect.value : undefined;
+                            const iVal = intervalInput ? (parseInt(intervalInput.value) || 60) : undefined;
+                            await saveTemplateOnTheFly(t, destSelect.value, sVal, iVal, undefined, promptArea.value);
+                        };
  
                         const codeBlockRow = syncStyleContainer.createDiv();
                         codeBlockRow.style.marginTop = '8px';
