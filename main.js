@@ -2603,10 +2603,12 @@ Ensure only valid JSON is output, and no debug or extra text is printed.`;
     async runHL7QueryScript() {
         const child_process = require('child_process');
         const path = require('path');
+        const fs = require('fs');
         
         const vaultPath = this.app.vault.adapter.getBasePath();
         const sep = vaultPath.includes('/') ? '/' : '\\';
-        const scriptPath = `${vaultPath}${sep}04_Projects${sep}hl7-nl-to-sql${sep}query_lake_obsidian.py`;
+        const projectDir = `${vaultPath}${sep}04_Projects${sep}hl7-nl-to-sql`;
+        const scriptPath = `${projectDir}${sep}query_lake_obsidian.py`;
         
         const activeFile = this.app.workspace.getActiveFile();
         if (!activeFile) {
@@ -2623,7 +2625,13 @@ Ensure only valid JSON is output, and no debug or extra text is printed.`;
             GEMINI_API_KEY: geminiKey
         });
         
-        const cmd = `python -u "${scriptPath}" "${absoluteActivePath}"`;
+        // Use venv python if it exists
+        const venvPython = process.platform === 'win32'
+            ? path.join(projectDir, '.venv', 'Scripts', 'python.exe')
+            : path.join(projectDir, '.venv', 'bin', 'python');
+        const pythonCmd = fs.existsSync(venvPython) ? `"${venvPython}"` : 'python';
+        
+        const cmd = `${pythonCmd} -u "${scriptPath}" "${absoluteActivePath}"`;
         console.log(`Running Python script: ${cmd}`);
         
         new obsidian.Notice("Running HL7 NL-to-SQL Query...");
@@ -2644,10 +2652,12 @@ Ensure only valid JSON is output, and no debug or extra text is printed.`;
     async runHL7IngestScript() {
         const child_process = require('child_process');
         const path = require('path');
+        const fs = require('fs');
         
         const vaultPath = this.app.vault.adapter.getBasePath();
         const sep = vaultPath.includes('/') ? '/' : '\\';
-        const scriptPath = `${vaultPath}${sep}04_Projects${sep}hl7-nl-to-sql${sep}ingest_all_samples.py`;
+        const projectDir = `${vaultPath}${sep}04_Projects${sep}hl7-nl-to-sql`;
+        const scriptPath = `${projectDir}${sep}ingest_all_samples.py`;
         
         let geminiKey = await this.getSecret(this.settings.geminiApiKeyId || 'omni-logger-gemini-api-key', 'geminiApiKey');
         if (!geminiKey) {
@@ -2657,7 +2667,13 @@ Ensure only valid JSON is output, and no debug or extra text is printed.`;
             GEMINI_API_KEY: geminiKey
         });
         
-        const cmd = `python -u "${scriptPath}"`;
+        // Use venv python if it exists
+        const venvPython = process.platform === 'win32'
+            ? path.join(projectDir, '.venv', 'Scripts', 'python.exe')
+            : path.join(projectDir, '.venv', 'bin', 'python');
+        const pythonCmd = fs.existsSync(venvPython) ? `"${venvPython}"` : 'python';
+        
+        const cmd = `${pythonCmd} -u "${scriptPath}"`;
         console.log(`Running Ingest Script: ${cmd}`);
         
         new obsidian.Notice("Starting HL7 Batch Ingestion...");
