@@ -33,9 +33,9 @@ const DEFAULT_SETTINGS = {
         "https://www.googleapis.com/auth/googlehealth.nutrition.readonly",
         "https://www.googleapis.com/auth/googlehealth.nutrition.writeonly"
     ],
-    googleHealthSleepPrompt: 'Examine the raw Google Fitness API JSON payload representing my sleep sessions for today. Extract the longest sleep session and calculate the total sleep duration (minutesAsleep). Output the sleep duration in the exact format X hr Y min. Also extract the wake up time from the end of the session, making sure to apply the endUtcOffset to convert the Zulu time into local time (e.g. if time is 09:54Z and offset is -18000s (5 hours), local time is 04:54 AM). Format the wake up time as HH:MM AM/PM. Your output MUST be a valid JSON object with keys like "Sleep" and "Wakeup". Do not wrap in markdown blocks. Example: { "Sleep": "7 hr 5 min", "Wakeup": "04:54 AM" }',
+    googleHealthSleepPrompt: 'Examine the raw Google Fitness API JSON payload representing my sleep sessions for today. Extract the longest sleep session and calculate the total sleep duration (minutesAsleep). Output the sleep duration in the exact format H:MM (e.g. 7:04). Also extract the wake up time from the end of the session, making sure to apply the endUtcOffset to convert the Zulu time into local time (e.g. if time is 09:54Z and offset is -18000s (5 hours), local time is 04:54). Format the wake up time as H:MM (24-hour time or just without AM/PM). Your output MUST be a valid JSON object with keys like "Sleep" and "Wakeup". Do not wrap in markdown blocks. Example: { "Sleep": "7:05", "Wakeup": "4:54" }',
     googleHealthVitalsPrompt: 'Examine the raw Google Fitness API JSON payload representing heart rate variability (HRV) for today. Extract the averageHeartRateVariabilityMilliseconds or RMSSD metric. Round the value to the nearest integer. Your output MUST be a valid JSON object with keys like "HRV". Example: { "HRV": 44 }',
-    googleHealthNutritionPrompt: 'Examine the raw Google Fitness API JSON payload representing my food logs for today. Summarize caffeine, alcohol, protein, and calories. IMPORTANT: The API may provide caffeine and alcohol in GRAMS (e.g. 0.225 grams of caffeine). You MUST convert this to MILLIGRAMS (mg) by multiplying by 1000 (e.g. 0.225g = 225mg). Output values as numbers without units. Your output MUST be a valid JSON object with exactly these keys: "caffeine", "alcohol", "protein", "calories". Example: { "caffeine": 225, "alcohol": 0, "protein": 30, "calories": 160 }',
+    googleHealthNutritionPrompt: 'Examine the raw Google Fitness API JSON payload representing my food logs for today. Summarize total caffeine, alcohol, protein, and calories. IMPORTANT: The API may provide caffeine and alcohol in GRAMS (e.g. 0.225 grams). You MUST convert this to MILLIGRAMS (mg) by multiplying by 1000 (e.g. 0.225g = 225mg). Output values as numbers without units. If any nutrient is missing from the payload, output 0 for that nutrient. Your output MUST be a valid JSON object with exactly these keys: "caffeine", "alcohol", "protein", "calories". Example: { "caffeine": 225, "alcohol": 0, "protein": 0, "calories": 0 }',
     googleHealthHydrationPrompt: 'Examine the raw Google Fitness API JSON payload representing hydration. Summarize total water intake in milliliters. Your output MUST be a valid JSON object with keys like "hydration". Example: { "hydration": 750 }',
     gitRepoPaths: [
         "c:\\Users\\jare0\\Documents\\Obsidian",
@@ -1239,17 +1239,22 @@ class OmniLoggerPlugin extends obsidian.Plugin {
         
         try {
             const payloadText = await this.fetchPayloadForTemplate(t);
-            const provider = this.settings.executorProvider || 'gemini';
-            const model = this.settings.executorModel || 'gemini-2.5-flash';
-            
-            const llmResponse = await this.callLLM(
-                provider,
-                model,
-                t.prompt,
-                `Here is the API response payload for today:\n${payloadText}`
-            );
-            
-            const extracted = JSON.parse(llmResponse);
+            let extracted = {};
+            if (['google-sleep', 'google-hrv', 'google-hydration', 'google-nutrition'].includes(t.id)) {
+                extracted = this.parseGoogleHealthPayloadLocally(t.id, payloadText);
+            } else {
+                const provider = this.settings.executorProvider || 'gemini';
+                const model = this.settings.executorModel || 'gemini-2.5-flash';
+                
+                const llmResponse = await this.callLLM(
+                    provider,
+                    model,
+                    t.prompt,
+                    `Here is the API response payload for today:\n${payloadText}`
+                );
+                
+                extracted = JSON.parse(llmResponse);
+            }
             
             // Map LLM output keys to target keys configured by the user
             const dataToWrite = {};
@@ -1318,6 +1323,126 @@ class OmniLoggerPlugin extends obsidian.Plugin {
             new obsidian.Notice(`Sync failed for ${t.name}: ${e.message}`);
             throw e;
         }
+    }
+
+    parseGoogleHealthPayloadLocally(templateId, payloadText) {
+        try {
+            const data = JSON.parse(payloadText);
+            
+            if (templateId === 'google-sleep') {
+                const dataPoints = data.dataPoints || [];
+                let longestSession = null;
+                let maxMinutes = -1;
+                for (const pt of dataPoints) {
+                    const minutes = parseInt(pt.sleep?.summary?.minutesAsleep || "0");
+                    if (minutes > maxMinutes) {
+                        maxMinutes = minutes;
+                        longestSession = pt;
+                    }
+                }
+                
+                if (longestSession) {
+                    const minutesAsleep = parseInt(longestSession.sleep?.summary?.minutesAsleep || "0");
+                    const hours = Math.floor(minutesAsleep / 60);
+                    const mins = minutesAsleep % 60;
+                    const sleepStr = `${hours}:${mins < 10 ? '0' : ''}${mins}`;
+                    
+                    let wakeupStr = "";
+                    const endTimeStr = longestSession.sleep?.interval?.endTime;
+                    if (endTimeStr) {
+                        const offsetSecStr = longestSession.sleep?.interval?.endUtcOffset || "0s";
+                        const offsetSec = parseInt(offsetSecStr.replace("s", ""));
+                        const utcTime = new Date(endTimeStr).getTime();
+                        const localTime = new Date(utcTime + offsetSec * 1000);
+                        const localHours = localTime.getUTCHours();
+                        const localMins = localTime.getUTCMinutes();
+                        wakeupStr = `${localHours}:${localMins < 10 ? '0' : ''}${localMins}`;
+                    }
+                    return { Sleep: sleepStr, Wakeup: wakeupStr };
+                }
+                return { Sleep: "0:00", Wakeup: "" };
+            }
+            
+            if (templateId === 'google-hrv') {
+                const hrvLogs = data.hrvLogs || [];
+                let totalHrv = 0;
+                let hrvCount = 0;
+                for (const pt of hrvLogs) {
+                    const val = pt.dailyHeartRateVariability?.averageHeartRateVariabilityMilliseconds;
+                    if (typeof val === 'number') {
+                        totalHrv += val;
+                        hrvCount++;
+                    }
+                }
+                const averageHrv = hrvCount > 0 ? Math.round(totalHrv / hrvCount) : 0;
+                return { HRV: averageHrv };
+            }
+            
+            if (templateId === 'google-hydration') {
+                const dataPoints = data.dataPoints || [];
+                let totalVolumeLiters = 0;
+                for (const pt of dataPoints) {
+                    const val = pt.hydrationLog?.volume || pt.hydrationLog?.volumeLiters || pt.value?.hydrationLog?.volume || 0;
+                    if (typeof val === 'number') {
+                        totalVolumeLiters += val;
+                    }
+                }
+                const totalMl = Math.round(totalVolumeLiters * 1000);
+                return { hydration: totalMl };
+            }
+            
+            if (templateId === 'google-nutrition') {
+                const nutritionLogs = data.nutritionLogs || [];
+                const alcoholConsumptionLogs = data.alcoholConsumptionLogs || [];
+                
+                const result = {};
+                
+                if (nutritionLogs.length > 0) {
+                    let caffeineMg = 0;
+                    let proteinGrams = 0;
+                    let totalCalories = 0;
+                    
+                    for (const pt of nutritionLogs) {
+                        const log = pt.nutritionLog || pt.value || {};
+                        const energyKcal = log.energy?.kcal || log.energy?.kilocalories || 0;
+                        totalCalories += energyKcal;
+                        
+                        const nutrients = log.nutrients || [];
+                        for (const n of nutrients) {
+                            const name = (n.nutrient || "").toUpperCase();
+                            const grams = n.quantity?.grams || 0;
+                            
+                            if (name === "PROTEIN") {
+                                proteinGrams += grams;
+                            } else if (name === "CAFFEINE") {
+                                caffeineMg += grams * 1000;
+                            } else if (name === "ENERGY" || name === "CALORIES") {
+                                const kcal = n.quantity?.kcal || n.quantity?.kilocalories || n.quantity?.calories || 0;
+                                totalCalories += kcal;
+                            }
+                        }
+                    }
+                    result.caffeine = Math.round(caffeineMg);
+                    result.protein = Math.round(proteinGrams);
+                    result.calories = Math.round(totalCalories);
+                }
+                
+                if (alcoholConsumptionLogs.length > 0) {
+                    let alcoholMg = 0;
+                    for (const pt of alcoholConsumptionLogs) {
+                        const log = pt.alcoholConsumption || pt.value || {};
+                        const grams = log.quantity?.grams || log.grams || 0;
+                        alcoholMg += grams * 1000;
+                    }
+                    result.alcohol = Math.round(alcoholMg);
+                }
+                
+                return result;
+            }
+        } catch (e) {
+            console.error("Error in parseGoogleHealthPayloadLocally:", e);
+        }
+        return {};
     }
 
     async fetchPayloadForTemplate(t) {
