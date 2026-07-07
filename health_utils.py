@@ -384,14 +384,10 @@ def get_google_health_data(token, date_str):
                     protein_count += direct_protein
                     calories_count += direct_energy
             
-            if caffeine_count > 0.0:
-                results["caffeine"] = round(caffeine_count)
-            if alcohol_count > 0.0:
-                results["alcohol"] = round(alcohol_count)
-            if protein_count > 0.0:
-                results["protein"] = round(protein_count)
-            if calories_count > 0.0:
-                results["calories"] = round(calories_count)
+            results["caffeine"] = round(caffeine_count)
+            results["alcohol"] = round(alcohol_count)
+            results["protein"] = round(protein_count)
+            results["calories"] = round(calories_count)
         else:
             print(f"Warning: Google Health API nutrition-log status code: {res.status_code}: {res.text}")
     except Exception as e:
@@ -404,17 +400,16 @@ def get_google_health_data(token, date_str):
         if res.status_code == 200:
             data = res.json()
             points = data.get("dataPoints", [])
-            if points:
-                alc_count = 0.0
-                for pt in points:
-                    val_obj = pt.get("alcoholConsumption", pt.get("value", {}))
-                    interval = val_obj.get("interval", {})
-                    start_time_str = interval.get("startTime", "")
-                    if not start_time_str:
-                        continue
-                    if day_start_iso <= start_time_str <= day_end_iso:
-                        alc_count += val_obj.get("amount", 14.0)
-                results["alcohol"] = round(alc_count + (results["alcohol"] or 0.0))
+            alc_count = 0.0
+            for pt in points:
+                val_obj = pt.get("alcoholConsumption", pt.get("value", {}))
+                interval = val_obj.get("interval", {})
+                start_time_str = interval.get("startTime", "")
+                if not start_time_str:
+                    continue
+                if day_start_iso <= start_time_str <= day_end_iso:
+                    alc_count += val_obj.get("amount", 14.0)
+            results["alcohol"] = round(alc_count + (results["alcohol"] or 0.0))
     except Exception as e:
         print(f"Warning: Google Health alcohol-consumption sync failed: {e}")
         
@@ -425,19 +420,18 @@ def get_google_health_data(token, date_str):
         if res.status_code == 200:
             data = res.json()
             points = data.get("dataPoints", [])
-            if points:
-                hyd_sum = 0.0
-                for pt in points:
-                    val_obj = pt.get("hydrationLog", pt.get("value", {}))
-                    interval = val_obj.get("interval", {})
-                    start_time_str = interval.get("startTime", "")
-                    if not start_time_str:
-                        continue
-                    if day_start_iso <= start_time_str <= day_end_iso:
-                        amount_consumed = val_obj.get("amountConsumed", {})
-                        volume = amount_consumed.get("milliliters", 0.0) if isinstance(amount_consumed, dict) else val_obj.get("amount", val_obj.get("volume", 0.0))
-                        hyd_sum += volume if "amountConsumed" in val_obj else (volume * 1000.0)
-                results["hydration"] = round(hyd_sum)
+            hyd_sum = 0.0
+            for pt in points:
+                val_obj = pt.get("hydrationLog", pt.get("value", {}))
+                interval = val_obj.get("interval", {})
+                start_time_str = interval.get("startTime", "")
+                if not start_time_str:
+                    continue
+                if day_start_iso <= start_time_str <= day_end_iso:
+                    amount_consumed = val_obj.get("amountConsumed", {})
+                    volume = amount_consumed.get("milliliters", 0.0) if isinstance(amount_consumed, dict) else val_obj.get("amount", val_obj.get("volume", 0.0))
+                    hyd_sum += volume if "amountConsumed" in val_obj else (volume * 1000.0)
+            results["hydration"] = round(hyd_sum)
     except Exception as e:
         print(f"Warning: Google Health hydration pull failed: {e}")
         
