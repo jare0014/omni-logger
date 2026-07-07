@@ -967,6 +967,19 @@ class OmniLoggerPlugin extends obsidian.Plugin {
                         }).catch(err => {
                             new obsidian.Notice(`Connection sync failed for ${t.name}: ${err.message}`);
                         });
+                    } else if (t.mode === 'ocr') {
+                        const cleanDirName = t.name.replace(/[^a-zA-Z0-9 _-]/g, '');
+                        const absoluteTemplatePath = path.join(vaultPath, folderName, cleanDirName);
+                        
+                        const dailyFile = this.getDailyNoteFile();
+                        if (!dailyFile) {
+                            new obsidian.Notice("Daily note not found!");
+                            return;
+                        }
+                        const absoluteDailyPath = path.join(vaultPath, dailyFile.path);
+                        
+                        new obsidian.Notice(`Starting OCR sync for ${t.name}...`);
+                        this.runPythonScript('log_ocr.py', `--template-dir "${absoluteTemplatePath}" --file "${absoluteDailyPath}"`);
                     } else if (t.mode === 'api') {
                         new obsidian.Notice(`Syncing API connection for ${t.name}...`);
                         this.syncApiTemplate(t.id);
