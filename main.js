@@ -5372,7 +5372,7 @@ Rules:
                     }
                 }));
 
-
+        renderLocalParserEditor();
 
     }
 }
