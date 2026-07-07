@@ -3678,46 +3678,6 @@ class OmniLoggerSettingTab extends obsidian.PluginSettingTab {
                         await this.plugin.saveSettings();
                     }));
         } else {
-            const ollamaSetting = new obsidian.Setting(containerEl)
-                .setName('Ollama Server URL')
-                .setDesc('Local URL for Ollama API.')
-                .addText(text => text
-                    .setPlaceholder('http://localhost:11434')
-                    .setValue(this.plugin.settings.ollamaUrl || 'http://localhost:11434')
-                    .onChange(async (value) => {
-                        this.plugin.settings.ollamaUrl = value;
-                        await this.plugin.saveSettings();
-                    }))
-                .addButton(btn => btn
-                    .setButtonText('Test')
-                    .onClick(async () => {
-                        const url = this.plugin.settings.ollamaUrl || 'http://localhost:11434';
-                        btn.setButtonText('Testing...');
-                        try {
-                            const res = await requestWithTimeout({
-                                url: `${url}/api/tags`,
-                                method: 'GET'
-                            });
-                            if (res.status === 200) {
-                                new obsidian.Notice('Ollama server is online!');
-                                updateBadge(ollamaBadge, true, 'Connected');
-                            } else {
-                                new obsidian.Notice(`Ollama server returned status ${res.status}`);
-                                updateBadge(ollamaBadge, false, 'Error');
-                            }
-                        } catch(e) {
-                            new obsidian.Notice(`Ollama server connection failed: ${e.message}`);
-                            updateBadge(ollamaBadge, false, 'Error');
-                        } finally {
-                            btn.setButtonText('Test');
-                        }
-                    })
-                );
-            const ollamaBadge = createStatusBadge(ollamaSetting.nameEl);
-            requestWithTimeout({ url: `${this.plugin.settings.ollamaUrl || 'http://localhost:11434'}/api/tags`, method: 'GET' })
-                .then(res => updateBadge(ollamaBadge, res.status===200, 'Connected'))
-                .catch(() => updateBadge(ollamaBadge, false, 'Error'));
-                
             new obsidian.Setting(containerEl)
                 .setName('Model')
                 .setDesc('Enter Ollama model name.')
@@ -3791,6 +3751,53 @@ class OmniLoggerSettingTab extends obsidian.PluginSettingTab {
                         this.plugin.settings.executorModel = value;
                         await this.plugin.saveSettings();
                     }));
+        }
+
+        // =====================================================================
+        // 1C. 🦙 OLLAMA CONNECTION SETTINGS
+        // =====================================================================
+        if (this.plugin.settings.templateProvider === 'ollama' || this.plugin.settings.executorProvider === 'ollama') {
+            containerEl.createEl('h3', { text: '🦙 Ollama Connection Settings' });
+
+            const ollamaSetting = new obsidian.Setting(containerEl)
+                .setName('Ollama Server URL')
+                .setDesc('Local or VPN URL for Ollama API (e.g., http://localhost:11434 or http://10.x.x.x:11434).')
+                .addText(text => text
+                    .setPlaceholder('http://localhost:11434')
+                    .setValue(this.plugin.settings.ollamaUrl || 'http://localhost:11434')
+                    .onChange(async (value) => {
+                        this.plugin.settings.ollamaUrl = value.trim();
+                        await this.plugin.saveSettings();
+                    }))
+                .addButton(btn => btn
+                    .setButtonText('Test')
+                    .onClick(async () => {
+                        const url = this.plugin.settings.ollamaUrl || 'http://localhost:11434';
+                        btn.setButtonText('Testing...');
+                        try {
+                            const res = await requestWithTimeout({
+                                url: `${url}/api/tags`,
+                                method: 'GET'
+                            });
+                            if (res.status === 200) {
+                                new obsidian.Notice('Ollama server is online!');
+                                updateBadge(ollamaBadge, true, 'Connected');
+                            } else {
+                                new obsidian.Notice(`Ollama server returned status ${res.status}`);
+                                updateBadge(ollamaBadge, false, 'Error');
+                            }
+                        } catch(e) {
+                            new obsidian.Notice(`Ollama server connection failed: ${e.message}`);
+                            updateBadge(ollamaBadge, false, 'Error');
+                        } finally {
+                            btn.setButtonText('Test');
+                        }
+                    })
+                );
+            const ollamaBadge = createStatusBadge(ollamaSetting.nameEl);
+            requestWithTimeout({ url: `${this.plugin.settings.ollamaUrl || 'http://localhost:11434'}/api/tags`, method: 'GET' })
+                .then(res => updateBadge(ollamaBadge, res.status===200, 'Connected'))
+                .catch(() => updateBadge(ollamaBadge, false, 'Error'));
         }
 
         // =====================================================================
