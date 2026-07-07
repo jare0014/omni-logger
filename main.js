@@ -64,7 +64,7 @@ const DEFAULT_SETTINGS = {
     ],
     openaiApiKeyId: 'omni-logger-openai-api-key',
     openaiApiKey: '',
-    localParserPrompt: "Calculate dabs as the difference between Puffco_odometer/puffco_odometer values (chartGroup: 'Consumption'). Calculate total calls by summing all calls-08am to calls-04pm properties (chartGroup: 'Productivity'). Group daily scores in the scores array by their category ('Memory', 'Attention', 'Speed', 'Flexibility', 'Reasoning'/'Problem Solving', and 'Language') and calculate the average score for each category. Plot category averages on the Cognitive trends chart. Calculate average Lumosity as the overall daily session aggregate (chartGroup: 'Cognitive'). Extract intakes_completed and auths_completed (chartGroup: 'Productivity')."
+    localParserPrompt: "Calculate generic custom computed metrics. Example: calculate total active minutes by summing morning_exercise and evening_exercise (chartGroup: 'Fitness'). Calculate average focus score from study_sessions array (chartGroup: 'Productivity')."
 };
 
 
