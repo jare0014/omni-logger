@@ -16,3 +16,9 @@ bluetooth_devices/
 Chatbot Discussions/
 **/Chatbot Discussions/
 
+# Ignore Dev Logs
+*Dev Log.md
+*dev log.md
+*dev-log.md
+*Dev-Log.md
+
