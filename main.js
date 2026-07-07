@@ -1963,15 +1963,22 @@ class OmniLoggerPlugin extends obsidian.Plugin {
             
             if (templateId === 'google-hydration') {
                 const dataPoints = data.dataPoints || [];
-                let totalVolumeLiters = 0;
+                let totalMl = 0;
                 for (const pt of dataPoints) {
-                    const val = pt.hydrationLog?.volume || pt.hydrationLog?.volumeLiters || pt.value?.hydrationLog?.volume || 0;
-                    if (typeof val === 'number') {
-                        totalVolumeLiters += val;
+                    const log = pt.hydrationLog || pt.value?.hydrationLog || {};
+                    // Check milliliters first
+                    const ml = log.amountConsumed?.milliliters || log.amountConsumedMilliliters || 0;
+                    if (ml > 0) {
+                        totalMl += ml;
+                    } else {
+                        // Fallback to liters
+                        const litersVal = log.volume?.liters || log.volumeLiters || (typeof log.volume === 'number' ? log.volume : 0);
+                        if (litersVal > 0) {
+                            totalMl += litersVal * 1000;
+                        }
                     }
                 }
-                const totalMl = Math.round(totalVolumeLiters * 1000);
-                return { hydration: totalMl };
+                return { hydration: Math.round(totalMl) };
             }
             
             if (templateId === 'google-nutrition') {
@@ -2089,13 +2096,26 @@ class OmniLoggerPlugin extends obsidian.Plugin {
                 return JSON.stringify({ hrvLogs: hrvPoints });
             } else if (t.id === 'google-hydration') {
                 const hydUrl = "https://health.googleapis.com/v4/users/me/dataTypes/hydration-log/dataPoints";
-                const response = await obsidian.requestUrl({ url: hydUrl, headers: { 'Authorization': `Bearer ${token}` } });
-                const points = response.json?.dataPoints || [];
-                const todayPoints = points.filter(pt => {
-                    const timeStr = pt.hydrationLog?.interval?.startTime || pt.value?.interval?.startTime || "";
-                    return timeStr && timeStr >= dayStartIso && timeStr <= dayEndIso;
-                });
-                return JSON.stringify({ dataPoints: todayPoints });
+                let hydPoints = [];
+                try {
+                    let url = hydUrl + "?pageSize=1000";
+                    while (url) {
+                        const response = await obsidian.requestUrl({ url: url, headers: { 'Authorization': `Bearer ${token}` } });
+                        const points = response.json?.dataPoints || [];
+                        hydPoints.push(...points.filter(pt => {
+                            const timeStr = pt.hydrationLog?.interval?.startTime || pt.value?.interval?.startTime || "";
+                            return timeStr && timeStr >= dayStartIso && timeStr <= dayEndIso;
+                        }));
+                        if (response.json?.nextPageToken) {
+                            url = hydUrl + "?pageSize=1000&pageToken=" + response.json.nextPageToken;
+                        } else {
+                            url = null;
+                        }
+                    }
+                } catch(e) {
+                    console.warn("Failed to fetch Hydration logs:", e);
+                }
+                return JSON.stringify({ dataPoints: hydPoints });
             } else if (t.id === 'google-nutrition') {
                 const nutritionUrl = "https://health.googleapis.com/v4/users/me/dataTypes/nutrition-log/dataPoints";
                 const alcUrl = "https://health.googleapis.com/v4/users/me/dataTypes/alcohol-consumption/dataPoints";
