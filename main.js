@@ -310,8 +310,11 @@ class OmniLoggerPlugin extends obsidian.Plugin {
                 const path = require('path');
                 const localParserPath = path.join(this.app.vault.adapter.getBasePath(), '.obsidian', 'plugins', 'omni-logger', 'local-parser.js');
                 if (fs.existsSync(localParserPath)) {
-                    delete require.cache[require.resolve(localParserPath)];
-                    localParser = require(localParserPath);
+                    const localContent = fs.readFileSync(localParserPath, 'utf8');
+                    const moduleObj = { exports: {} };
+                    const fn = new Function('module', 'exports', 'require', localContent);
+                    fn(moduleObj, moduleObj.exports, require);
+                    localParser = moduleObj.exports;
                 }
             } catch (e) {
                 console.error("Failed to load local parser:", e);
