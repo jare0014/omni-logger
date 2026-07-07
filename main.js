@@ -286,6 +286,8 @@ class OmniLoggerPlugin extends obsidian.Plugin {
             
             let configDays = this.settings.dashboardDateRange || 14;
             let configExcludeWeekends = this.settings.dashboardExcludeWeekends !== false;
+            let configStart = null;
+            let configEnd = null;
             
             if (source) {
                 const YAML = require('yaml');
@@ -294,6 +296,8 @@ class OmniLoggerPlugin extends obsidian.Plugin {
                     if (parsedConfig) {
                         if (parsedConfig.days !== undefined) configDays = parseInt(parsedConfig.days, 10);
                         if (parsedConfig['exclude-weekends'] !== undefined) configExcludeWeekends = !!parsedConfig['exclude-weekends'];
+                        if (parsedConfig.start !== undefined) configStart = String(parsedConfig.start).trim();
+                        if (parsedConfig.end !== undefined) configEnd = String(parsedConfig.end).trim();
                     }
                 } catch(e) {}
             }
@@ -304,6 +308,7 @@ class OmniLoggerPlugin extends obsidian.Plugin {
             }).sort((a, b) => a.name.localeCompare(b.name));
 
             const dataset = [];
+            let prevOdom = null;
             for (let file of dailyFiles) {
                 const dateStr = file.basename;
                 const content = await this.app.vault.read(file);
@@ -330,8 +335,8 @@ class OmniLoggerPlugin extends obsidian.Plugin {
                 };
 
                 const parsedRow = { date: dateStr };
-                const cards = this.settings.dashboardCards || [];
-                cards.forEach(card => {
+                const settingsCards = this.settings.dashboardCards || [];
+                settingsCards.forEach(card => {
                     const rawVal = getVal(card.key);
                     let val = 0;
                     if (rawVal !== undefined && rawVal !== null && rawVal !== "" && rawVal !== "-") {
@@ -350,6 +355,55 @@ class OmniLoggerPlugin extends obsidian.Plugin {
                     }
                     parsedRow[card.key] = val;
                 });
+
+                // Custom/calculated metrics from original dashboard
+                // 1. Avg Lumosity
+                const dailyScores = Array.isArray(frontmatter.scores) ? frontmatter.scores : (frontmatter.scores ? [frontmatter.scores] : []);
+                let sumScores = 0, countScores = 0;
+                for (let s of dailyScores) {
+                    if (s && s.score !== undefined && s.score !== null) {
+                        const scVal = parseFloat(String(s.score).replace(/[^0-9.-]/g, ""));
+                        if (!isNaN(scVal) && scVal > 0) {
+                            sumScores += scVal;
+                            countScores++;
+                        }
+                    }
+                }
+                parsedRow['avgLumosity'] = countScores > 0 ? Math.round(sumScores / countScores) : 0;
+
+                // 2. Intakes and Auths completed
+                const getFloatVal = (k) => {
+                    const v = getVal(k);
+                    if (v === undefined || v === null || v === "") return 0;
+                    return parseFloat(String(v).replace(/[^0-9.-]/g, "")) || 0;
+                };
+                parsedRow['intakes_completed'] = getFloatVal('intakes_completed');
+                parsedRow['auths_completed'] = getFloatVal('auths_completed');
+                parsedRow['intakes_new'] = getFloatVal('intakes_new');
+                parsedRow['auths_new'] = getFloatVal('auths_new');
+
+                // 3. Calls
+                let callsCount = 0;
+                const callKeys = [
+                    "calls-08am", "calls-09am", "calls-10am", "calls-11am",
+                    "calls-12pm", "calls-01pm", "calls-02pm", "calls-03pm", "calls-04pm"
+                ];
+                for (let k of callKeys) {
+                    const v = getVal(k);
+                    if (v) callsCount += parseFloat(String(v).replace(/[^0-9.-]/g, "")) || 0;
+                }
+                parsedRow['calls'] = callsCount;
+
+                // 4. Dabs
+                const currentOdom = parseFloat(String(getVal('Puffco_odometer') || getVal('puffco_odometer') || "").replace(/[^0-9.-]/g, "")) || 0;
+                let dabsDiff = 0;
+                if (currentOdom > 0 && prevOdom > 0) {
+                    dabsDiff = currentOdom - prevOdom;
+                }
+                if (currentOdom > 0) {
+                    prevOdom = currentOdom;
+                }
+                parsedRow['dabs'] = dabsDiff;
                 
                 dataset.push(parsedRow);
             }
@@ -360,8 +414,24 @@ class OmniLoggerPlugin extends obsidian.Plugin {
             }
 
             dataset.sort((a, b) => a.date.localeCompare(b.date));
-            const latest = dataset[dataset.length - 1];
-            const rangeData = dataset.slice(-configDays);
+
+            let rangeData = [];
+            if (configStart || configEnd) {
+                rangeData = dataset.filter(d => {
+                    if (configStart && d.date < configStart) return false;
+                    if (configEnd && d.date > configEnd) return false;
+                    return true;
+                });
+            } else {
+                rangeData = dataset.slice(-configDays);
+            }
+
+            if (rangeData.length === 0) {
+                wrapper.createDiv({ text: 'No daily notes data found in the specified range.' });
+                return;
+            }
+
+            const latest = rangeData[rangeData.length - 1];
             const baselineDays = rangeData.slice(0, -1);
             
             const filteredBaseline = configExcludeWeekends
@@ -374,13 +444,31 @@ class OmniLoggerPlugin extends obsidian.Plugin {
             const dbContainer = wrapper.createDiv({ cls: 'omni-db-container' });
             const header = dbContainer.createDiv({ cls: 'omni-db-header' });
             header.createEl('h2', { text: 'Readiness & Productivity Dashboard', cls: 'omni-db-title' });
+
+            const dateRangeLabel = (configStart || configEnd)
+                ? `Range: ${configStart || 'Start'} to ${configEnd || 'End'}`
+                : `Range: ${configDays} days`;
             header.createEl('p', { 
-                text: `Latest Update: ${latest.date} | Historical baseline computed over prior ${filteredBaseline.length} days (Range: ${configDays} days)`, 
+                text: `Latest Update: ${latest.date} | Historical baseline computed over prior ${filteredBaseline.length} days (${dateRangeLabel})`, 
                 cls: 'omni-db-subtitle' 
             });
 
             const grid = dbContainer.createDiv({ cls: 'omni-db-grid' });
-            const cards = this.settings.dashboardCards || [];
+            
+            // Build the full cards list dynamically including calculated ones
+            const cards = [...(this.settings.dashboardCards || [])];
+            const extraCards = [
+                { key: 'avgLumosity', label: 'Avg Lumosity', unit: '', agg: 'average', chartType: 'line', color: '#f59e0b' },
+                { key: 'intakes_completed', label: 'Intakes Completed', unit: '', agg: 'average', chartType: 'line', color: '#10b981' },
+                { key: 'auths_completed', label: 'Auths Completed', unit: '', agg: 'average', chartType: 'line', color: '#8b5cf6' },
+                { key: 'calls', label: 'Total Calls', unit: '', agg: 'average', chartType: 'bar', color: '#6366f1' },
+                { key: 'dabs', label: 'Dabs Today', unit: '', agg: 'average', chartType: 'bar', color: '#ec4899' }
+            ];
+            for (let ec of extraCards) {
+                if (!cards.some(c => c.key === ec.key)) {
+                    cards.push(ec);
+                }
+            }
 
             cards.forEach(card => {
                 const cardEl = grid.createDiv({ cls: 'omni-db-card' });
@@ -437,7 +525,8 @@ class OmniLoggerPlugin extends obsidian.Plugin {
             const canvases = [];
             chartCards.forEach((card, idx) => {
                 const chartBox = chartsGrid.createDiv({ cls: 'omni-db-chart-container' });
-                chartBox.createEl('h4', { text: `${card.label} Trend (${configDays}-Day)`, cls: 'omni-db-chart-title' });
+                const chartRangeLabel = (configStart || configEnd) ? 'Range' : `${configDays}-Day`;
+                chartBox.createEl('h4', { text: `${card.label} Trend (${chartRangeLabel})`, cls: 'omni-db-chart-title' });
                 const wrapper = chartBox.createDiv({ cls: 'omni-db-chart-canvas-wrapper' });
                 const canvas = wrapper.createEl('canvas', { attr: { id: `omni_chart_${card.key}_${idx}` } });
                 canvases.push({ canvas, card });
