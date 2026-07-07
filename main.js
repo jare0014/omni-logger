@@ -302,13 +302,27 @@ class OmniLoggerPlugin extends obsidian.Plugin {
                 } catch(e) {}
             }
 
+            // Load local custom parser if it exists
+            let localParser = null;
+            try {
+                const fs = require('fs');
+                const path = require('path');
+                const localParserPath = path.join(this.app.vault.adapter.getBasePath(), '.obsidian', 'plugins', 'omni-logger', 'local-parser.js');
+                if (fs.existsSync(localParserPath)) {
+                    delete require.cache[require.resolve(localParserPath)];
+                    localParser = require(localParserPath);
+                }
+            } catch (e) {
+                console.error("Failed to load local parser:", e);
+            }
+
             const dailyFiles = this.app.vault.getMarkdownFiles().filter(file => {
                 const norm = file.path.replace(/\\/g, '/');
                 return norm.includes('02_Journal/01_Daily') && file.name.match(/^\d{4}-\d{2}-\d{2}\.md$/);
             }).sort((a, b) => a.name.localeCompare(b.name));
 
             const dataset = [];
-            let prevOdom = null;
+            const parserState = { prevOdom: null };
             for (let file of dailyFiles) {
                 const dateStr = file.basename;
                 const content = await this.app.vault.read(file);
@@ -356,54 +370,14 @@ class OmniLoggerPlugin extends obsidian.Plugin {
                     parsedRow[card.key] = val;
                 });
 
-                // Custom/calculated metrics from original dashboard
-                // 1. Avg Lumosity
-                const dailyScores = Array.isArray(frontmatter.scores) ? frontmatter.scores : (frontmatter.scores ? [frontmatter.scores] : []);
-                let sumScores = 0, countScores = 0;
-                for (let s of dailyScores) {
-                    if (s && s.score !== undefined && s.score !== null) {
-                        const scVal = parseFloat(String(s.score).replace(/[^0-9.-]/g, ""));
-                        if (!isNaN(scVal) && scVal > 0) {
-                            sumScores += scVal;
-                            countScores++;
-                        }
+                // Run local parser if loaded
+                if (localParser && typeof localParser.parseMetrics === 'function') {
+                    try {
+                        localParser.parseMetrics(frontmatter, inlineData, parsedRow, parserState, getVal);
+                    } catch (e) {
+                        console.error("Local metrics parser error on file " + file.name + ":", e);
                     }
                 }
-                parsedRow['avgLumosity'] = countScores > 0 ? Math.round(sumScores / countScores) : 0;
-
-                // 2. Intakes and Auths completed
-                const getFloatVal = (k) => {
-                    const v = getVal(k);
-                    if (v === undefined || v === null || v === "") return 0;
-                    return parseFloat(String(v).replace(/[^0-9.-]/g, "")) || 0;
-                };
-                parsedRow['intakes_completed'] = getFloatVal('intakes_completed');
-                parsedRow['auths_completed'] = getFloatVal('auths_completed');
-                parsedRow['intakes_new'] = getFloatVal('intakes_new');
-                parsedRow['auths_new'] = getFloatVal('auths_new');
-
-                // 3. Calls
-                let callsCount = 0;
-                const callKeys = [
-                    "calls-08am", "calls-09am", "calls-10am", "calls-11am",
-                    "calls-12pm", "calls-01pm", "calls-02pm", "calls-03pm", "calls-04pm"
-                ];
-                for (let k of callKeys) {
-                    const v = getVal(k);
-                    if (v) callsCount += parseFloat(String(v).replace(/[^0-9.-]/g, "")) || 0;
-                }
-                parsedRow['calls'] = callsCount;
-
-                // 4. Dabs
-                const currentOdom = parseFloat(String(getVal('Puffco_odometer') || getVal('puffco_odometer') || "").replace(/[^0-9.-]/g, "")) || 0;
-                let dabsDiff = 0;
-                if (currentOdom > 0 && prevOdom > 0) {
-                    dabsDiff = currentOdom - prevOdom;
-                }
-                if (currentOdom > 0) {
-                    prevOdom = currentOdom;
-                }
-                parsedRow['dabs'] = dabsDiff;
                 
                 dataset.push(parsedRow);
             }
@@ -457,17 +431,12 @@ class OmniLoggerPlugin extends obsidian.Plugin {
             
             // Build the full cards list dynamically including calculated ones
             const cards = [...(this.settings.dashboardCards || [])];
-            const extraCards = [
-                { key: 'avgLumosity', label: 'Avg Lumosity', unit: '', agg: 'average', chartType: 'line', color: '#f59e0b', chartGroup: 'Cognitive' },
-                { key: 'intakes_completed', label: 'Intakes Completed', unit: '', agg: 'average', chartType: 'line', color: '#10b981', chartGroup: 'Productivity' },
-                { key: 'auths_completed', label: 'Auths Completed', unit: '', agg: 'average', chartType: 'line', color: '#8b5cf6', chartGroup: 'Productivity' },
-                { key: 'calls', label: 'Total Calls', unit: '', agg: 'average', chartType: 'bar', color: '#6366f1', chartGroup: 'Productivity' },
-                { key: 'dabs', label: 'Dabs Today', unit: '', agg: 'average', chartType: 'bar', color: '#ec4899', chartGroup: 'Consumption' }
-            ];
-            for (let ec of extraCards) {
-                if (!cards.some(c => c.key === ec.key)) {
-                    cards.push(ec);
-                }
+            if (localParser && Array.isArray(localParser.extraCards)) {
+                localParser.extraCards.forEach(ec => {
+                    if (!cards.some(c => c.key === ec.key)) {
+                        cards.push(ec);
+                    }
+                });
             }
 
             cards.forEach(card => {

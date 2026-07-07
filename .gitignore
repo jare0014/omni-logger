@@ -22,3 +22,5 @@ Chatbot Discussions/
 *dev-log.md
 *Dev-Log.md
 
+# Ignore local parser config
+local-parser.js
