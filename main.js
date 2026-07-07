@@ -53,7 +53,15 @@ const DEFAULT_SETTINGS = {
     gitSyncInterval: 60,
     googleHealthSyncStyle: 'manual',
     googleHealthSyncInterval: 60,
-    deletedBuiltInTemplates: []
+    deletedBuiltInTemplates: [],
+    dashboardDateRange: 14,
+    dashboardExcludeWeekends: true,
+    dashboardCards: [
+        { key: "Sleep_score", label: "Sleep Score", unit: "", agg: "average", chartType: "line", color: "#6366f1" },
+        { key: "Sleep_hours", label: "Sleep Hours", unit: "hrs", agg: "average", chartType: "line", color: "#10b981" },
+        { key: "Readiness", label: "Readiness", unit: "", agg: "average", chartType: "line", color: "#ec4899" },
+        { key: "HRV", label: "HRV", unit: "ms", agg: "average", chartType: "line", color: "#f59e0b" }
+    ]
 };
 
 
@@ -130,6 +138,491 @@ class OmniLoggerPlugin extends obsidian.Plugin {
         }
     }
 
+    registerDashboardCodeBlock() {
+        this.registerMarkdownCodeBlockProcessor("omni-dashboard", async (source, el, ctx) => {
+            el.empty();
+            const wrapper = el.createDiv({ cls: 'omni-dashboard-wrapper' });
+            wrapper.style.padding = '10px 0';
+            wrapper.style.fontFamily = "'Outfit', 'Inter', -apple-system, sans-serif";
+            
+            const styleId = 'omni-dashboard-styles';
+            if (!document.getElementById(styleId)) {
+                const styleEl = document.createElement("style");
+                styleEl.id = styleId;
+                styleEl.textContent = `
+                    .omni-db-container {
+                        color: var(--text-normal);
+                        background-color: var(--background-primary);
+                        padding: 16px;
+                        border-radius: 12px;
+                    }
+                    .omni-db-header {
+                        margin-bottom: 24px;
+                    }
+                    .omni-db-title {
+                        font-size: 1.8em;
+                        font-weight: 700;
+                        margin: 0;
+                        background: linear-gradient(90deg, #818cf8, #ec4899);
+                        -webkit-background-clip: text;
+                        -webkit-text-fill-color: transparent;
+                    }
+                    .omni-db-subtitle {
+                        font-size: 0.9em;
+                        color: var(--text-muted);
+                        margin: 4px 0 0 0;
+                    }
+                    .omni-db-grid {
+                        display: grid;
+                        grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+                        gap: 16px;
+                        margin-bottom: 24px;
+                    }
+                    .omni-db-card {
+                        background-color: var(--background-secondary);
+                        border: 1px solid var(--background-modifier-border);
+                        border-radius: 10px;
+                        padding: 16px;
+                        transition: transform 0.2s ease, box-shadow 0.2s ease;
+                        box-shadow: 0 2px 8px rgba(0,0,0,0.05);
+                    }
+                    .omni-db-card:hover {
+                        transform: translateY(-2px);
+                        box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+                        border-color: var(--interactive-accent);
+                    }
+                    .omni-db-card-title {
+                        font-size: 0.85em;
+                        text-transform: uppercase;
+                        letter-spacing: 0.05em;
+                        color: var(--text-muted);
+                        margin: 0 0 8px 0;
+                    }
+                    .omni-db-card-value {
+                        font-size: 1.8em;
+                        font-weight: 700;
+                        margin: 0;
+                        color: var(--text-normal);
+                        display: flex;
+                        align-items: baseline;
+                        gap: 8px;
+                    }
+                    .omni-db-card-unit {
+                        font-size: 0.5em;
+                        color: var(--text-muted);
+                        font-weight: 400;
+                    }
+                    .omni-db-card-trend {
+                        font-size: 0.75em;
+                        margin-top: 6px;
+                        font-weight: 600;
+                    }
+                    .omni-trend-up { color: #10b981; }
+                    .omni-trend-down { color: #ef4444; }
+                    .omni-trend-neutral { color: var(--text-muted); }
+                    
+                    .omni-db-charts-grid {
+                        display: grid;
+                        grid-template-columns: repeat(auto-fit, minmax(350px, 1fr));
+                        gap: 20px;
+                        margin-bottom: 24px;
+                    }
+                    .omni-db-chart-container {
+                        background-color: var(--background-secondary);
+                        border: 1px solid var(--background-modifier-border);
+                        border-radius: 12px;
+                        padding: 16px;
+                        height: 320px;
+                    }
+                    .omni-db-chart-title {
+                        font-size: 1em;
+                        font-weight: 600;
+                        margin: 0 0 16px 0;
+                        color: var(--text-normal);
+                        border-left: 3px solid var(--interactive-accent);
+                        padding-left: 8px;
+                    }
+                    .omni-db-chart-canvas-wrapper {
+                        position: relative;
+                        height: calc(100% - 36px);
+                        width: 100%;
+                    }
+                    
+                    .omni-db-table-container {
+                        background-color: var(--background-secondary);
+                        border: 1px solid var(--background-modifier-border);
+                        border-radius: 12px;
+                        padding: 16px;
+                        overflow-x: auto;
+                        margin-bottom: 24px;
+                    }
+                    .omni-db-table-title {
+                        font-size: 1.1em;
+                        font-weight: 600;
+                        margin: 0 0 12px 0;
+                    }
+                    .omni-db-table {
+                        width: 100%;
+                        border-collapse: collapse;
+                        text-align: left;
+                        font-size: 0.9em;
+                    }
+                    .omni-db-table th, .omni-db-table td {
+                        padding: 10px 12px;
+                        border-bottom: 1px solid var(--background-modifier-border);
+                    }
+                    .omni-db-table th {
+                        font-weight: 600;
+                        color: var(--text-muted);
+                    }
+                    .omni-db-table tr:hover td {
+                        background-color: var(--background-primary-alt);
+                    }
+                `;
+                document.head.appendChild(styleEl);
+            }
+            
+            let configDays = this.settings.dashboardDateRange || 14;
+            let configExcludeWeekends = this.settings.dashboardExcludeWeekends !== false;
+            
+            if (source) {
+                const YAML = require('yaml');
+                try {
+                    const parsedConfig = YAML.parse(source);
+                    if (parsedConfig) {
+                        if (parsedConfig.days !== undefined) configDays = parseInt(parsedConfig.days, 10);
+                        if (parsedConfig['exclude-weekends'] !== undefined) configExcludeWeekends = !!parsedConfig['exclude-weekends'];
+                    }
+                } catch(e) {}
+            }
+
+            const dailyFiles = this.app.vault.getMarkdownFiles().filter(file => {
+                const norm = file.path.replace(/\\/g, '/');
+                return norm.includes('02_Journal/01_Daily') && file.name.match(/^\d{4}-\d{2}-\d{2}\.md$/);
+            }).sort((a, b) => a.name.localeCompare(b.name));
+
+            const dataset = [];
+            for (let file of dailyFiles) {
+                const dateStr = file.basename;
+                const content = await this.app.vault.read(file);
+                const cache = this.app.metadataCache.getFileCache(file);
+                const frontmatter = cache?.frontmatter || {};
+                
+                const inlineData = {};
+                const inlineRegex = /^([a-zA-Z0-9_\-]+)::\s*(.+)$/gm;
+                let match;
+                while ((match = inlineRegex.exec(content)) !== null) {
+                    inlineData[match[1].trim()] = match[2].trim();
+                }
+
+                const getVal = (key) => {
+                    if (frontmatter[key] !== undefined) return frontmatter[key];
+                    if (inlineData[key] !== undefined) return inlineData[key];
+                    for (let fKey in frontmatter) {
+                        if (fKey.toLowerCase() === key.toLowerCase()) return frontmatter[fKey];
+                    }
+                    for (let iKey in inlineData) {
+                        if (iKey.toLowerCase() === key.toLowerCase()) return inlineData[iKey];
+                    }
+                    return null;
+                };
+
+                const parsedRow = { date: dateStr };
+                const cards = this.settings.dashboardCards || [];
+                cards.forEach(card => {
+                    const rawVal = getVal(card.key);
+                    let val = 0;
+                    if (rawVal !== undefined && rawVal !== null && rawVal !== "" && rawVal !== "-") {
+                        const str = String(rawVal).trim();
+                        if (str.includes(":")) {
+                            const parts = str.split(":");
+                            if (parts.length >= 2) {
+                                const hrs = parseInt(parts[0], 10) || 0;
+                                const mins = parseInt(parts[1], 10) || 0;
+                                val = hrs + (mins / 60);
+                            }
+                        } else {
+                            const num = parseFloat(str.replace(/[^0-9.\-]/g, ""));
+                            val = isNaN(num) ? 0 : num;
+                        }
+                    }
+                    parsedRow[card.key] = val;
+                });
+                
+                dataset.push(parsedRow);
+            }
+
+            if (dataset.length === 0) {
+                wrapper.createDiv({ text: 'No daily notes data found.' });
+                return;
+            }
+
+            dataset.sort((a, b) => a.date.localeCompare(b.date));
+            const latest = dataset[dataset.length - 1];
+            const rangeData = dataset.slice(-configDays);
+            const baselineDays = rangeData.slice(0, -1);
+            
+            const filteredBaseline = configExcludeWeekends
+                ? baselineDays.filter(d => {
+                    const day = window.moment(d.date).day();
+                    return day !== 0 && day !== 6;
+                })
+                : baselineDays;
+
+            const dbContainer = wrapper.createDiv({ cls: 'omni-db-container' });
+            const header = dbContainer.createDiv({ cls: 'omni-db-header' });
+            header.createEl('h2', { text: 'Readiness & Productivity Dashboard', cls: 'omni-db-title' });
+            header.createEl('p', { 
+                text: `Latest Update: ${latest.date} | Historical baseline computed over prior ${filteredBaseline.length} days (Range: ${configDays} days)`, 
+                cls: 'omni-db-subtitle' 
+            });
+
+            const grid = dbContainer.createDiv({ cls: 'omni-db-grid' });
+            const cards = this.settings.dashboardCards || [];
+
+            cards.forEach(card => {
+                const cardEl = grid.createDiv({ cls: 'omni-db-card' });
+                cardEl.createEl('h4', { text: card.label, cls: 'omni-db-card-title' });
+                
+                const val = latest[card.key] || 0;
+                let formattedVal = val;
+                if (card.unit === 'hrs') {
+                    formattedVal = Math.round(val * 100) / 100;
+                } else if (card.agg === 'average') {
+                    formattedVal = Math.round(val);
+                }
+
+                const valEl = cardEl.createEl('p', { cls: 'omni-db-card-value' });
+                valEl.appendText(String(formattedVal));
+                if (card.unit) {
+                    const unitSpan = document.createElement('span');
+                    unitSpan.className = 'omni-db-card-unit';
+                    unitSpan.textContent = ' ' + card.unit;
+                    valEl.appendChild(unitSpan);
+                }
+
+                let sum = 0, count = 0;
+                filteredBaseline.forEach(d => {
+                    if (d[card.key] !== undefined && d[card.key] !== null) {
+                        sum += d[card.key];
+                        count++;
+                    }
+                });
+                const baselineAvg = count > 0 ? (sum / count) : 0;
+                const diff = val - baselineAvg;
+                
+                let trendClass = 'omni-trend-neutral';
+                let trendText = 'No baseline';
+                
+                if (baselineAvg > 0 && val > 0) {
+                    const pct = Math.round((diff / baselineAvg) * 100);
+                    const sign = pct >= 0 ? '+' : '';
+                    trendText = `${sign}${pct}% vs avg (${Math.round(baselineAvg)})`;
+                    
+                    if (pct === 0) {
+                        trendClass = 'omni-trend-neutral';
+                    } else if (pct > 0) {
+                        trendClass = 'omni-trend-up';
+                    } else {
+                        trendClass = 'omni-trend-down';
+                    }
+                }
+                cardEl.createEl('div', { text: trendText, cls: `omni-db-card-trend ${trendClass}` });
+            });
+
+            const chartsGrid = dbContainer.createDiv({ cls: 'omni-db-charts-grid' });
+            const chartCards = cards.filter(c => c.chartType && c.chartType !== 'none');
+            const canvases = [];
+            chartCards.forEach((card, idx) => {
+                const chartBox = chartsGrid.createDiv({ cls: 'omni-db-chart-container' });
+                chartBox.createEl('h4', { text: `${card.label} Trend (${configDays}-Day)`, cls: 'omni-db-chart-title' });
+                const wrapper = chartBox.createDiv({ cls: 'omni-db-chart-canvas-wrapper' });
+                const canvas = wrapper.createEl('canvas', { attr: { id: `omni_chart_${card.key}_${idx}` } });
+                canvases.push({ canvas, card });
+            });
+
+            const renderAllCharts = () => {
+                const chartData = rangeData;
+                const labels = chartData.map(d => d.date.substring(5));
+                const isDark = document.body.classList.contains("theme-dark");
+                const textColor = isDark ? "#b3b3b3" : "#555555";
+                const gridColor = isDark ? "rgba(255,255,255,0.08)" : "rgba(0,0,0,0.06)";
+
+                canvases.forEach(({ canvas, card }) => {
+                    const ctx = canvas.getContext('2d');
+                    const chartId = `instance_${canvas.id}`;
+                    if (window[chartId]) window[chartId].destroy();
+                    
+                    window[chartId] = new Chart(ctx, {
+                        type: card.chartType,
+                        data: {
+                            labels: labels,
+                            datasets: [{
+                                label: card.label,
+                                data: chartData.map(d => d[card.key] || null),
+                                borderColor: card.color || '#6366f1',
+                                backgroundColor: card.chartType === 'bar' ? (card.color || '#6366f1') + '66' : (card.color || '#6366f1') + '1a',
+                                borderWidth: 2,
+                                tension: 0.3,
+                                spanGaps: true
+                            }]
+                        },
+                        options: {
+                            responsive: true,
+                            maintainAspectRatio: false,
+                            plugins: {
+                                legend: { display: false }
+                            },
+                            scales: {
+                                x: {
+                                    grid: { color: gridColor },
+                                    ticks: { color: textColor, font: { size: 9 } }
+                                },
+                                y: {
+                                    grid: { color: gridColor },
+                                    ticks: { color: textColor, font: { size: 9 } },
+                                    beginAtZero: card.chartType === 'bar'
+                                }
+                            }
+                        }
+                    });
+                });
+            };
+
+            if (typeof Chart === 'undefined') {
+                const script = document.createElement('script');
+                script.src = 'https://cdn.jsdelivr.net/npm/chart.js';
+                script.onload = () => renderAllCharts();
+                document.head.appendChild(script);
+            } else {
+                renderAllCharts();
+            }
+        });
+    }
+
+    async archiveWeeklyReport() {
+        const moment = window.moment;
+        const now = moment();
+        const startOfLastWeek = moment().subtract(7, 'days').startOf('day');
+        const endOfLastWeek = moment().subtract(1, 'days').endOf('day');
+        
+        const weekNum = now.week();
+        const yearNum = now.year();
+        const reportFilename = `${yearNum}-W${String(weekNum).padStart(2, '0')}.md`;
+        
+        const dailyFiles = this.app.vault.getMarkdownFiles().filter(file => {
+            const norm = file.path.replace(/\\/g, '/');
+            if (!norm.includes('02_Journal/01_Daily') || !file.name.match(/^\d{4}-\d{2}-\d{2}\.md$/)) return false;
+            const fileDate = moment(file.basename, 'YYYY-MM-DD');
+            return fileDate.isSameOrAfter(startOfLastWeek) && fileDate.isSameOrBefore(endOfLastWeek);
+        }).sort((a, b) => a.name.localeCompare(b.name));
+        
+        if (dailyFiles.length === 0) {
+            new obsidian.Notice("No daily notes found in the last 7 days to compile a report!");
+            return;
+        }
+        
+        new obsidian.Notice("Compiling weekly report...");
+        
+        let markdown = `# 📊 Weekly Health & Productivity Report (${yearNum}-W${weekNum})\n`;
+        markdown += `Report compiled on: ${now.format('YYYY-MM-DD HH:mm:ss')}\n`;
+        markdown += `Period: ${startOfLastWeek.format('YYYY-MM-DD')} to ${endOfLastWeek.format('YYYY-MM-DD')}\n\n`;
+        
+        const cards = this.settings.dashboardCards || [];
+        markdown += `## 📈 Summary Metrics\n\n`;
+        markdown += `| Date | ` + cards.map(c => c.label).join(' | ') + ` |\n`;
+        markdown += `| --- | ` + cards.map(() => '---').join(' | ') + ` |\n`;
+        
+        const parsedRows = [];
+        for (let file of dailyFiles) {
+            const dateStr = file.basename;
+            const content = await this.app.vault.read(file);
+            const cache = this.app.metadataCache.getFileCache(file);
+            const frontmatter = cache?.frontmatter || {};
+            
+            const inlineData = {};
+            const inlineRegex = /^([a-zA-Z0-9_\-]+)::\s*(.+)$/gm;
+            let match;
+            while ((match = inlineRegex.exec(content)) !== null) {
+                inlineData[match[1].trim()] = match[2].trim();
+            }
+            
+            const getVal = (key) => {
+                if (frontmatter[key] !== undefined) return frontmatter[key];
+                if (inlineData[key] !== undefined) return inlineData[key];
+                for (let fKey in frontmatter) {
+                    if (fKey.toLowerCase() === key.toLowerCase()) return frontmatter[fKey];
+                }
+                for (let iKey in inlineData) {
+                    if (iKey.toLowerCase() === key.toLowerCase()) return inlineData[iKey];
+                }
+                return null;
+            };
+            
+            const rowVals = [];
+            const rowData = { date: dateStr };
+            cards.forEach(card => {
+                const rawVal = getVal(card.key);
+                let val = 0;
+                if (rawVal !== undefined && rawVal !== null && rawVal !== "" && rawVal !== "-") {
+                    const str = String(rawVal).trim();
+                    if (str.includes(":")) {
+                        const parts = str.split(":");
+                        if (parts.length >= 2) {
+                            const hrs = parseInt(parts[0], 10) || 0;
+                            const mins = parseInt(parts[1], 10) || 0;
+                            val = hrs + (mins / 60);
+                        }
+                    } else {
+                        const num = parseFloat(str.replace(/[^0-9.\-]/g, ""));
+                        val = isNaN(num) ? 0 : num;
+                    }
+                }
+                rowData[card.key] = val;
+                
+                let displayVal = val;
+                if (card.unit === 'hrs') displayVal = (Math.round(val * 100) / 100) + ' hrs';
+                else if (card.unit) displayVal = val + ' ' + card.unit;
+                rowVals.push(displayVal);
+            });
+            parsedRows.push(rowData);
+            markdown += `| **${dateStr}** | ` + rowVals.join(' | ') + ` |\n`;
+        }
+        
+        markdown += `\n### 📊 Weekly Baselines & Averages\n\n`;
+        const averages = [];
+        cards.forEach(card => {
+            let sum = 0, count = 0;
+            parsedRows.forEach(row => {
+                if (row[card.key] !== undefined && row[card.key] !== null) {
+                    sum += row[card.key];
+                    count++;
+                }
+            });
+            const avg = count > 0 ? (sum / count) : 0;
+            let displayAvg = Math.round(avg * 100) / 100;
+            if (card.unit) displayAvg += ' ' + card.unit;
+            averages.push(`*   **${card.label}:** ${displayAvg}`);
+        });
+        markdown += averages.join('\n') + `\n`;
+        
+        const folderPath = '08_Health/Reports/Weekly';
+        const fullFilePath = `${folderPath}/${reportFilename}`;
+        
+        const fs = require('fs');
+        const path = require('path');
+        const vaultPath = this.app.vault.adapter.getBasePath();
+        const absFolderPath = path.join(vaultPath, folderPath.replace(/\//g, path.sep));
+        const absFilePath = path.join(vaultPath, fullFilePath.replace(/\//g, path.sep));
+        
+        if (!fs.existsSync(absFolderPath)) {
+            fs.mkdirSync(absFolderPath, { recursive: true });
+        }
+        
+        fs.writeFileSync(absFilePath, markdown, 'utf8');
+        new obsidian.Notice(`Archived weekly health report as: ${fullFilePath}`);
+    }
+
     getBuiltInGoogleTemplate(templateId) {
         const syncConfig = this.settings.healthSyncConfig || {};
         if (templateId === 'google-sleep') {
@@ -191,6 +684,14 @@ class OmniLoggerPlugin extends obsidian.Plugin {
         this.ensureVenv();
         await this.loadCustomTemplatesFromVault();
         this.registerCustomTemplateCommands();
+        this.registerDashboardCodeBlock();
+
+        // Register Command to Archive Weekly Report
+        this.addCommand({
+            id: 'archive-weekly-report',
+            name: 'Archive Weekly Health & Productivity Report',
+            callback: () => this.archiveWeeklyReport()
+        });
 
         // Register Command to Open Modal
         this.addCommand({
@@ -3106,6 +3607,54 @@ class OmniLoggerSettingTab extends obsidian.PluginSettingTab {
         }
 
         // =====================================================================
+        // 1B. ⚡ EXECUTION AI SETTINGS
+        // =====================================================================
+        containerEl.createEl('h3', { text: '⚡ Execution AI Settings' });
+
+        new obsidian.Setting(containerEl)
+            .setName('Execution Provider')
+            .setDesc('Select the LLM provider for executing data extraction on raw payloads.')
+            .addDropdown(dropdown => dropdown
+                .addOption('gemini', 'Gemini (Google API)')
+                .addOption('ollama', 'Ollama (Local)')
+                .setValue(this.plugin.settings.executorProvider || 'gemini')
+                .onChange(async (value) => {
+                    this.plugin.settings.executorProvider = value;
+                    if (value === 'ollama' && !this.plugin.settings.executorModel.includes(':')) {
+                        this.plugin.settings.executorModel = 'qwen2.5:7b';
+                    } else if (value === 'gemini' && this.plugin.settings.executorModel.includes(':')) {
+                        this.plugin.settings.executorModel = 'gemini-2.5-flash';
+                    }
+                    await this.plugin.saveSettings();
+                    this.display(); // full re-render
+                }));
+
+        if (this.plugin.settings.executorProvider === 'gemini') {
+            new obsidian.Setting(containerEl)
+                .setName('Execution Model')
+                .setDesc('Gemini model to use for execution.')
+                .addDropdown(dropdown => dropdown
+                    .addOption('gemini-2.5-flash', 'Gemini 2.5 Flash')
+                    .addOption('gemini-2.5-pro', 'Gemini 2.5 Pro')
+                    .setValue(this.plugin.settings.executorModel || 'gemini-2.5-flash')
+                    .onChange(async (value) => {
+                        this.plugin.settings.executorModel = value;
+                        await this.plugin.saveSettings();
+                    }));
+        } else {
+            new obsidian.Setting(containerEl)
+                .setName('Execution Model')
+                .setDesc('Enter Ollama model name for execution.')
+                .addText(text => text
+                    .setPlaceholder('qwen2.5:7b')
+                    .setValue(this.plugin.settings.executorModel || 'qwen2.5:7b')
+                    .onChange(async (value) => {
+                        this.plugin.settings.executorModel = value;
+                        await this.plugin.saveSettings();
+                    }));
+        }
+
+        // =====================================================================
         // 2. 🔌 SOURCES (Middle)
         // =====================================================================
         containerEl.createEl('hr');
@@ -4128,6 +4677,194 @@ class OmniLoggerSettingTab extends obsidian.PluginSettingTab {
         };
         renderTemplates();
 
+        // =====================================================================
+        // 5. 📊 CONFIGURABLE DASHBOARD SETTINGS
+        // =====================================================================
+        containerEl.createEl('hr');
+        containerEl.createEl('h3', { text: '📊 Dashboard Settings' });
+
+        new obsidian.Setting(containerEl)
+            .setName('Date Range (Days)')
+            .setDesc('Number of past days to query and display on the dashboard.')
+            .addText(text => text
+                .setPlaceholder('14')
+                .setValue(String(this.plugin.settings.dashboardDateRange || 14))
+                .onChange(async (value) => {
+                    const parsed = parseInt(value, 10);
+                    if (!isNaN(parsed) && parsed > 0) {
+                        this.plugin.settings.dashboardDateRange = parsed;
+                        await this.plugin.saveSettings();
+                    }
+                }));
+
+        new obsidian.Setting(containerEl)
+            .setName('Exclude Weekends')
+            .setDesc('Toggle whether Saturday and Sunday are excluded from calculated baseline averages.')
+            .addToggle(toggle => toggle
+                .setValue(this.plugin.settings.dashboardExcludeWeekends !== false)
+                .onChange(async (value) => {
+                    this.plugin.settings.dashboardExcludeWeekends = value;
+                    await this.plugin.saveSettings();
+                }));
+
+        containerEl.createEl('h4', { text: 'Metrics & Cards Display Config' });
+        const cardsContainer = containerEl.createDiv();
+        cardsContainer.style.border = '1px solid var(--background-modifier-border)';
+        cardsContainer.style.borderRadius = '8px';
+        cardsContainer.style.padding = '15px';
+        cardsContainer.style.marginBottom = '20px';
+        cardsContainer.style.backgroundColor = 'var(--background-primary-alt)';
+
+        const renderDashboardCardsList = () => {
+            cardsContainer.empty();
+            const cards = this.plugin.settings.dashboardCards || [];
+
+            if (cards.length === 0) {
+                const emptyMsg = cardsContainer.createDiv({ text: 'No dashboard cards configured. Create one below!' });
+                emptyMsg.style.color = 'var(--text-muted)';
+                emptyMsg.style.marginBottom = '15px';
+            } else {
+                cards.forEach((card, index) => {
+                    const cardRow = cardsContainer.createDiv();
+                    cardRow.style.display = 'flex';
+                    cardRow.style.gap = '8px';
+                    cardRow.style.alignItems = 'center';
+                    cardRow.style.marginBottom = '10px';
+                    cardRow.style.paddingBottom = '10px';
+                    cardRow.style.borderBottom = '1px solid var(--background-modifier-border)';
+
+                    const labelInput = cardRow.createEl('input', { type: 'text', value: card.label });
+                    labelInput.style.flex = '2';
+                    labelInput.style.minWidth = '100px';
+                    labelInput.setAttribute('placeholder', 'Label');
+                    labelInput.onchange = async () => {
+                        card.label = labelInput.value;
+                        await this.plugin.saveSettings();
+                    };
+
+                    const keyInput = cardRow.createEl('input', { type: 'text', value: card.key });
+                    keyInput.style.flex = '2';
+                    keyInput.style.minWidth = '100px';
+                    keyInput.setAttribute('placeholder', 'Frontmatter Key');
+                    keyInput.onchange = async () => {
+                        card.key = keyInput.value;
+                        await this.plugin.saveSettings();
+                    };
+
+                    const unitInput = cardRow.createEl('input', { type: 'text', value: card.unit || '' });
+                    unitInput.style.flex = '1';
+                    unitInput.style.width = '60px';
+                    unitInput.setAttribute('placeholder', 'Unit');
+                    unitInput.onchange = async () => {
+                        card.unit = unitInput.value;
+                        await this.plugin.saveSettings();
+                    };
+
+                    const aggSelect = cardRow.createEl('select');
+                    [['average', 'Average'], ['sum', 'Sum'], ['diff', 'Diff']].forEach(([v, l]) => {
+                        const opt = aggSelect.createEl('option', { value: v, text: l });
+                        if (card.agg === v) opt.selected = true;
+                    });
+                    aggSelect.onchange = async () => {
+                        card.agg = aggSelect.value;
+                        await this.plugin.saveSettings();
+                    };
+
+                    const chartSelect = cardRow.createEl('select');
+                    [['line', 'Line Chart'], ['bar', 'Bar Chart'], ['none', 'No Chart']].forEach(([v, l]) => {
+                        const opt = chartSelect.createEl('option', { value: v, text: l });
+                        if (card.chartType === v) opt.selected = true;
+                    });
+                    chartSelect.onchange = async () => {
+                        card.chartType = chartSelect.value;
+                        await this.plugin.saveSettings();
+                    };
+
+                    const colorInput = cardRow.createEl('input', { type: 'color', value: card.color || '#6366f1' });
+                    colorInput.style.width = '40px';
+                    colorInput.onchange = async () => {
+                        card.color = colorInput.value;
+                        await this.plugin.saveSettings();
+                    };
+
+                    const btnContainer = cardRow.createDiv();
+                    btnContainer.style.display = 'flex';
+                    btnContainer.style.gap = '4px';
+
+                    const upBtn = btnContainer.createEl('button', { text: '▲' });
+                    upBtn.disabled = index === 0;
+                    upBtn.onclick = async () => {
+                        const temp = cards[index - 1];
+                        cards[index - 1] = card;
+                        cards[index] = temp;
+                        await this.plugin.saveSettings();
+                        renderDashboardCardsList();
+                    };
+
+                    const downBtn = btnContainer.createEl('button', { text: '▼' });
+                    downBtn.disabled = index === cards.length - 1;
+                    downBtn.onclick = async () => {
+                        const temp = cards[index + 1];
+                        cards[index + 1] = card;
+                        cards[index] = temp;
+                        await this.plugin.saveSettings();
+                        renderDashboardCardsList();
+                    };
+
+                    const delBtn = btnContainer.createEl('button', { text: '🗑' });
+                    delBtn.style.color = 'var(--text-error)';
+                    delBtn.onclick = async () => {
+                        cards.splice(index, 1);
+                        await this.plugin.saveSettings();
+                        renderDashboardCardsList();
+                    };
+                });
+            }
+
+            const addRow = cardsContainer.createDiv();
+            addRow.style.display = 'flex';
+            addRow.style.gap = '8px';
+            addRow.style.marginTop = '15px';
+            addRow.style.paddingTop = '15px';
+            addRow.style.borderTop = '2px dashed var(--background-modifier-border)';
+            addRow.style.alignItems = 'center';
+
+            const addLabel = addRow.createEl('input', { type: 'text', placeholder: 'Label (e.g. Sleep Score)' });
+            addLabel.style.flex = '2';
+            const addKey = addRow.createEl('input', { type: 'text', placeholder: 'Key (e.g. sleep_score)' });
+            addKey.style.flex = '2';
+            const addUnit = addRow.createEl('input', { type: 'text', placeholder: 'Unit (e.g. hrs)' });
+            addUnit.style.flex = '1';
+
+            const addAgg = addRow.createEl('select');
+            [['average', 'Average'], ['sum', 'Sum'], ['diff', 'Diff']].forEach(([v, l]) => addAgg.createEl('option', { value: v, text: l }));
+
+            const addChart = addRow.createEl('select');
+            [['line', 'Line Chart'], ['bar', 'Bar Chart'], ['none', 'No Chart']].forEach(([v, l]) => addChart.createEl('option', { value: v, text: l }));
+
+            const addColor = addRow.createEl('input', { type: 'color', value: '#6366f1' });
+            addColor.style.width = '40px';
+
+            const addBtn = addRow.createEl('button', { text: '＋ Add Card', cls: 'mod-cta' });
+            addBtn.onclick = async () => {
+                if (!addLabel.value.trim() || !addKey.value.trim()) {
+                    new obsidian.Notice('Please provide both a label and a frontmatter key!');
+                    return;
+                }
+                cards.push({
+                    key: addKey.value.trim(),
+                    label: addLabel.value.trim(),
+                    unit: addUnit.value.trim(),
+                    agg: addAgg.value,
+                    chartType: addChart.value,
+                    color: addColor.value
+                });
+                await this.plugin.saveSettings();
+                renderDashboardCardsList();
+            };
+        };
+
+        renderDashboardCardsList();
 
     }
 }
