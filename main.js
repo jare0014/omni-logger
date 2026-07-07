@@ -377,7 +377,7 @@ class OmniLoggerPlugin extends obsidian.Plugin {
                 // Run local parser if loaded
                 if (localParser && typeof localParser.parseMetrics === 'function') {
                     try {
-                        localParser.parseMetrics(frontmatter, inlineData, parsedRow, parserState, getVal);
+                        localParser.parseMetrics(frontmatter, inlineData, parsedRow, parserState, getVal, content);
                     } catch (e) {
                         console.error("Local metrics parser error on file " + file.name + ":", e);
                     }
