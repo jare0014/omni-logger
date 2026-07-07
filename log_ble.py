@@ -67,11 +67,27 @@ class GenericBLEClient:
 
     async def connect(self, run_handshake=False):
         print(f"Connecting to BLE device {self.mac}...")
+        
+        # Resolve device using BleakScanner first (helps WinRT backend resolve stale caches)
+        from bleak import BleakScanner
+        device = None
+        try:
+            print(f"Scanning for device with address {self.mac}...")
+            device = await BleakScanner.find_device_by_address(self.mac, timeout=5.0)
+            if device:
+                print(f"Found device: {device.name} ({device.address})")
+            else:
+                print(f"Device with address {self.mac} not found in scan. Trying direct connect fallback...")
+        except Exception as e:
+            print(f"Warning: Scanner error: {e}")
+
+        target = device if device else self.mac
+
         # Windows WinRT can cache stale GATT sessions — retry up to 3 times,
         # verifying is_connected after __aenter__ each time.
         for attempt in range(1, 4):
             settle = 1.5 + attempt * 0.5  # 2.0s, 2.5s, 3.0s
-            self._cm = BleakClient(self.mac, timeout=20.0)
+            self._cm = BleakClient(target, timeout=20.0)
             try:
                 self.client = await self._cm.__aenter__()
                 await asyncio.sleep(settle)
