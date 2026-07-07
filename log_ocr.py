@@ -166,9 +166,11 @@ def update_append_log_generic(content, new_data):
     return "\n".join(lines) + "\n"
 
 class OCRLogger:
-    def __init__(self, template_dir, file_path):
+    def __init__(self, template_dir, file_path, image_path=None):
         self.template_dir = template_dir
         self.file_path = file_path
+        self.image_path = image_path
+        self.headless = image_path is not None
         
         # Load Template Metadata
         meta_path = os.path.join(template_dir, "metadata.json")
@@ -191,17 +193,28 @@ class OCRLogger:
         if not self.prompt:
             self.prompt = "Extract all parameters from this image. Return strictly in JSON format."
 
-        # Hide root window
-        self.root = tk.Tk()
-        self.root.withdraw()
-        
         try:
             self.api_key = get_gemini_key()
         except Exception as e:
+            if self.headless:
+                print(f"Configuration Error: {e}")
+                sys.exit(1)
+            # Show popup if not headless
+            self.root = tk.Tk()
+            self.root.withdraw()
             messagebox.showerror("Configuration Error", str(e))
             self.root.destroy()
             return
             
+        if self.headless:
+            # Headless execution
+            self.process_image(self.image_path)
+            return
+
+        # Hide root window
+        self.root = tk.Tk()
+        self.root.withdraw()
+        
         # Check clipboard
         from PIL import ImageGrab, Image
         import io
@@ -367,11 +380,21 @@ class OCRLogger:
             with open(self.file_path, "w", encoding="utf-8") as f:
                 f.write(updated_content)
                 
-            self.after_main(lambda: messagebox.showinfo("Success", f"Successfully extracted and saved {self.template_name} data to note!"))
+            if self.headless:
+                print(f"Successfully extracted and saved {self.template_name} data to note!")
+                print(json.dumps(data))
+                sys.exit(0)
+            else:
+                self.after_main(lambda: messagebox.showinfo("Success", f"Successfully extracted and saved {self.template_name} data to note!"))
         except Exception as e:
-            self.after_main(lambda: messagebox.showerror("OCR Error", f"Failed to extract {self.template_name} data: {e}"))
+            if self.headless:
+                print(f"Failed to extract {self.template_name} data: {e}")
+                sys.exit(1)
+            else:
+                self.after_main(lambda: messagebox.showerror("OCR Error", f"Failed to extract {self.template_name} data: {e}"))
         finally:
-            self.after_main(self.root.destroy)
+            if not self.headless:
+                self.after_main(self.root.destroy)
             
     def after_main(self, fn):
         self.root.after(0, fn)
@@ -380,9 +403,10 @@ def main():
     parser = argparse.ArgumentParser(description="Generic OCR Image log parsing script.")
     parser.add_argument('--template-dir', required=True, help="Path to custom template configuration folder")
     parser.add_argument('--file', required=True, help="Path to Daily Note markdown file to update")
+    parser.add_argument('--image', help="Optional path to the image file to process (headless mode)")
     
     args = parser.parse_args()
-    OCRLogger(args.template_dir, args.file)
+    OCRLogger(args.template_dir, args.file, args.image)
 
 if __name__ == "__main__":
     main()
