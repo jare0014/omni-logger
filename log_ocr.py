@@ -30,6 +30,22 @@ def get_gemini_key():
         return env_key
 
     plugin_dir = os.path.dirname(os.path.abspath(__file__))
+    
+    # Check for .env file in plugin or parent directories
+    for search_dir in [plugin_dir, os.path.dirname(plugin_dir), os.path.dirname(os.path.dirname(plugin_dir))]:
+        env_path = os.path.join(search_dir, ".env")
+        if os.path.exists(env_path):
+            try:
+                with open(env_path, "r", encoding="utf-8") as f:
+                    for line in f:
+                        if line.strip().startswith("GEMINI_API_KEY="):
+                            parts = line.strip().split("=", 1)
+                            key = parts[1].strip().strip('"').strip("'")
+                            if key:
+                                return key
+            except Exception:
+                pass
+
     data_json_path = os.path.join(plugin_dir, "data.json")
     if os.path.exists(data_json_path):
         try:
@@ -53,7 +69,7 @@ def get_gemini_key():
     except Exception:
         pass
 
-    raise FileNotFoundError("Gemini API Key not found. Please configure the key in Obsidian settings.")
+    raise FileNotFoundError("Gemini API Key not found. Please configure the key in Obsidian settings or a local .env file.")
 
 def format_yaml_value(val, indent=2):
     lines = []
