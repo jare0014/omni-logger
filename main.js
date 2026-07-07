@@ -64,7 +64,7 @@ const DEFAULT_SETTINGS = {
     ],
     openaiApiKeyId: 'omni-logger-openai-api-key',
     openaiApiKey: '',
-    localParserPrompt: "Calculate dabs as the difference between Puffco_odometer/puffco_odometer values (chartGroup: 'Consumption'). Calculate total calls by summing all calls-08am to calls-04pm properties (chartGroup: 'Productivity'). Calculate average Lumosity from scores array, ignoring scores <= 0 (chartGroup: 'Cognitive'). Extract intakes_completed and auths_completed (chartGroup: 'Productivity')."
+    localParserPrompt: "Calculate dabs as the difference between Puffco_odometer/puffco_odometer values (chartGroup: 'Consumption'). Calculate total calls by summing all calls-08am to calls-04pm properties (chartGroup: 'Productivity'). Parse individual game scores for 'Memory Match', 'Fuse Clues', 'Masterpiece', 'Ebb and Flow', and 'Word Bubbles' from the scores array and plot them on Cognitive trends chart. Calculate average Lumosity as their aggregate (chartGroup: 'Cognitive'). Extract intakes_completed and auths_completed (chartGroup: 'Productivity')."
 };
 
 
