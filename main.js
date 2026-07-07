@@ -63,7 +63,8 @@ const DEFAULT_SETTINGS = {
         { key: "HRV", label: "HRV", unit: "ms", agg: "average", chartType: "line", color: "#f59e0b" }
     ],
     openaiApiKeyId: 'omni-logger-openai-api-key',
-    openaiApiKey: ''
+    openaiApiKey: '',
+    localParserPrompt: "Calculate dabs as the difference between Puffco_odometer/puffco_odometer values (chartGroup: 'Consumption'). Calculate total calls by summing all calls-08am to calls-04pm properties (chartGroup: 'Productivity'). Calculate average Lumosity from scores array, ignoring scores <= 0 (chartGroup: 'Cognitive'). Extract intakes_completed and auths_completed (chartGroup: 'Productivity')."
 };
 
 
@@ -5141,6 +5142,20 @@ class OmniLoggerSettingTab extends obsidian.PluginSettingTab {
             cls: 'setting-item-description'
         });
 
+        new obsidian.Setting(containerEl)
+            .setName('AI Compilation Prompt')
+            .setDesc('Describe how your custom local metrics should be calculated in plain English. Click "Compile Parser with AI" to generate the code automatically.')
+            .addTextArea(text => {
+                text.inputEl.style.width = '100%';
+                text.inputEl.style.height = '80px';
+                text.setPlaceholder('Describe your calculations here...')
+                    .setValue(this.plugin.settings.localParserPrompt || '')
+                    .onChange(async (value) => {
+                        this.plugin.settings.localParserPrompt = value;
+                        await this.plugin.saveSettings();
+                    });
+            });
+
         const localParserContainer = containerEl.createDiv();
         localParserContainer.style.marginTop = '10px';
         localParserContainer.style.marginBottom = '25px';
@@ -5163,7 +5178,7 @@ class OmniLoggerSettingTab extends obsidian.PluginSettingTab {
                     localContent = `// Error reading file: ${e.message}`;
                 }
             } else {
-                localContent = `// local-parser.js not found. Click "Create Default Parser" to initialize.`;
+                localContent = `// local-parser.js not found. Click "Create Default Parser" or type a prompt above and click "Compile Parser with AI" to initialize.`;
             }
 
             if (exists) {
@@ -5209,7 +5224,228 @@ class OmniLoggerSettingTab extends obsidian.PluginSettingTab {
                     }
                 };
             } else {
-                const createBtn = localParserContainer.createEl('button', { text: '＋ Create Default local-parser.js', cls: 'mod-cta' });
+                const btnRow = localParserContainer.createDiv();
+                btnRow.style.display = 'flex';
+                btnRow.style.gap = '10px';
+                btnRow.style.marginTop = '10px';
+
+                const createBtn = btnRow.createEl('button', { text: '＋ Create Default local-parser.js', cls: 'mod-cta' });
+                createBtn.onclick = () => {
+                    const defaultTemplate = `module.exports = {
+    extraCards: [
+        { key: 'avgLumosity', label: 'Avg Lumosity', unit: '', agg: 'average', chartType: 'line', color: '#f59e0b', chartGroup: 'Cognitive' },
+        { key: 'intakes_completed', label: 'Intakes Completed', unit: '', agg: 'average', chartType: 'line', color: '#10b981', chartGroup: 'Productivity' },
+        { key: 'auths_completed', label: 'Auths Completed', unit: '', agg: 'average', chartType: 'line', color: '#8b5cf6', chartGroup: 'Productivity' },
+        { key: 'calls', label: 'Total Calls', unit: '', agg: 'average', chartType: 'bar', color: '#6366f1', chartGroup: 'Productivity' },
+        { key: 'dabs', label: 'Dabs Today', unit: '', agg: 'average', chartType: 'bar', color: '#ec4899', chartGroup: 'Consumption' }
+    ],
+    parseMetrics: function(frontmatter, inlineData, parsedRow, state, getVal) {
+        // 1. Avg Lumosity
+        const dailyScores = Array.isArray(frontmatter.scores) ? frontmatter.scores : (frontmatter.scores ? [frontmatter.scores] : []);
+        let sumScores = 0, countScores = 0;
+        for (let s of dailyScores) {
+            if (s && s.score !== undefined && s.score !== null) {
+                const scVal = parseFloat(String(s.score).replace(/[^0-9.-]/g, ""));
+                if (!isNaN(scVal) && scVal > 0) {
+                    sumScores += scVal;
+                    countScores++;
+                }
+            }
+        }
+        parsedRow['avgLumosity'] = countScores > 0 ? Math.round(sumScores / countScores) : 0;
+
+        // 2. Intakes and Auths completed
+        const getFloatVal = (k) => {
+            const v = getVal(k);
+            if (v === undefined || v === null || v === "") return 0;
+            return parseFloat(String(v).replace(/[^0-9.-]/g, "")) || 0;
+        };
+        parsedRow['intakes_completed'] = getFloatVal('intakes_completed');
+        parsedRow['auths_completed'] = getFloatVal('auths_completed');
+        parsedRow['intakes_new'] = getFloatVal('intakes_new');
+        parsedRow['auths_new'] = getFloatVal('auths_new');
+
+        // 3. Calls
+        let callsCount = 0;
+        const callKeys = [
+            "calls-08am", "calls-09am", "calls-10am", "calls-11am",
+            "calls-12pm", "calls-01pm", "calls-02pm", "calls-03pm", "calls-04pm"
+        ];
+        for (let k of callKeys) {
+            const v = getVal(k);
+            if (v) callsCount += parseFloat(String(v).replace(/[^0-9.-]/g, "")) || 0;
+        }
+        parsedRow['calls'] = callsCount;
+
+        // 4. Dabs
+        const currentOdom = parseFloat(String(getVal('Puffco_odometer') || getVal('puffco_odometer') || "").replace(/[^0-9.-]/g, "")) || 0;
+        let dabsDiff = 0;
+        if (currentOdom > 0 && state.prevOdom > 0) {
+            dabsDiff = currentOdom - state.prevOdom;
+        }
+        if (currentOdom > 0) {
+            state.prevOdom = currentOdom;
+        }
+        parsedRow['dabs'] = dabsDiff;
+    }
+};`;
+                    try {
+                        fs.writeFileSync(localParserPath, defaultTemplate, 'utf8');
+                        new obsidian.Notice('Created local-parser.js successfully!');
+                        renderLocalParserEditor();
+                    } catch (e) {
+                        new obsidian.Notice('Failed to create file: ' + e.message);
+                    }
+                };
+            }
+        };
+
+        const compileSetting = new obsidian.Setting(containerEl)
+            .setName('AI Compile Rules')
+            .setDesc('Generates local-parser.js using the template generation model based on your prompt above.')
+            .addButton(btn => btn
+                .setButtonText('🤖 Compile Parser with AI')
+                .setCta()
+                .onClick(async () => {
+                    const prompt = this.plugin.settings.localParserPrompt;
+                    if (!prompt || !prompt.trim()) {
+                        new obsidian.Notice("Please write a prompt describing your metrics calculations first!");
+                        return;
+                    }
+
+                    btn.setDisabled(true);
+                    btn.setButtonText('Compiling...');
+                    new obsidian.Notice("Sending request to LLM (this may take a few seconds)...");
+
+                    try {
+                        const provider = this.plugin.settings.templateProvider || 'gemini';
+                        const model = this.plugin.settings.templateModel || '';
+                        
+                        const systemPrompt = `You are an expert Javascript programmer writing parsing logic for an Obsidian dashboard.
+Your job is to generate a \`local-parser.js\` module.
+
+The module MUST export an object with this exact structure:
+\`\`\`javascript
+module.exports = {
+    extraCards: [
+        { key: 'key_name', label: 'Display Label', unit: 'unit', agg: 'average' | 'sum', chartType: 'line' | 'bar' | 'none', color: '#hex', chartGroup: 'Group Name' }
+    ],
+    parseMetrics: function(frontmatter, inlineData, parsedRow, state, getVal) {
+        // Parsing logic
+    }
+};
+\`\`\`
+Rules:
+1. In \`extraCards\`, define each metric you are tracking. \`key\` is the property name in \`parsedRow\`.
+2. In \`parseMetrics\`, extract the raw inputs using \`getVal('propertyName')\`. The keys are case-insensitive.
+3. Convert raw values to float safely (e.g. handle undefined, empty, or non-numeric strings).
+4. Assign the calculated values directly to \`parsedRow['key_name']\`.
+5. If a metric requires delta tracking across days (like an odometer), mutate the \`state\` object (e.g., use \`state.prevOdom\` to remember the previous day's value. Note that state starts empty).
+6. Return ONLY valid, executable Javascript code wrapped inside a markdown \`\`\`javascript ... \`\`\` code block. Do not include any HTML, explanations, or text outside the code block.`;
+
+                        const response = await this.plugin.callLLM(
+                            provider,
+                            model,
+                            systemPrompt,
+                            `Generate a local-parser.js file for the following requirements:\n"${prompt}"`
+                        );
+
+                        let code = response.trim();
+                        const match = code.match(/```javascript([\s\S]*?)```/) || code.match(/```js([\s\S]*?)```/);
+                        if (match) {
+                            code = match[1].trim();
+                        }
+
+                        const fs = require('fs');
+                        const path = require('path');
+                        const localParserPath = path.join(this.plugin.app.vault.adapter.getBasePath(), '.obsidian', 'plugins', 'omni-logger', 'local-parser.js');
+                        
+                        fs.writeFileSync(localParserPath, code, 'utf8');
+                        new obsidian.Notice('Successfully compiled and saved local-parser.js using AI!');
+                        renderLocalParserEditor();
+                    } catch (e) {
+                        console.error(e);
+                        new obsidian.Notice('AI Compilation failed: ' + e.message);
+                    } finally {
+                        btn.setDisabled(false);
+                        btn.setButtonText('🤖 Compile Parser with AI');
+                    }
+                }));
+
+        const localParserContainer = containerEl.createDiv();
+        localParserContainer.style.marginTop = '10px';
+        localParserContainer.style.marginBottom = '25px';
+
+        const renderLocalParserEditor = () => {
+            localParserContainer.empty();
+            
+            const fs = require('fs');
+            const path = require('path');
+            const localParserPath = path.join(this.plugin.app.vault.adapter.getBasePath(), '.obsidian', 'plugins', 'omni-logger', 'local-parser.js');
+            
+            let localContent = "";
+            let exists = false;
+            
+            if (fs.existsSync(localParserPath)) {
+                exists = true;
+                try {
+                    localContent = fs.readFileSync(localParserPath, 'utf8');
+                } catch(e) {
+                    localContent = `// Error reading file: ${e.message}`;
+                }
+            } else {
+                localContent = `// local-parser.js not found. Click "Create Default Parser" or type a prompt above and click "Compile Parser with AI" to initialize.`;
+            }
+
+            if (exists) {
+                const editorTextarea = localParserContainer.createEl('textarea');
+                editorTextarea.style.width = '100%';
+                editorTextarea.style.height = '300px';
+                editorTextarea.style.fontFamily = 'monospace';
+                editorTextarea.style.fontSize = '12px';
+                editorTextarea.style.padding = '10px';
+                editorTextarea.style.borderRadius = '6px';
+                editorTextarea.style.backgroundColor = 'var(--background-primary-alt)';
+                editorTextarea.style.border = '1px solid var(--background-modifier-border)';
+                editorTextarea.style.color = 'var(--text-normal)';
+                editorTextarea.value = localContent;
+
+                const btnRow = localParserContainer.createDiv();
+                btnRow.style.display = 'flex';
+                btnRow.style.gap = '10px';
+                btnRow.style.marginTop = '10px';
+
+                const saveBtn = btnRow.createEl('button', { text: '💾 Save local-parser.js', cls: 'mod-cta' });
+                saveBtn.onclick = () => {
+                    try {
+                        fs.writeFileSync(localParserPath, editorTextarea.value, 'utf8');
+                        new obsidian.Notice('Successfully saved local-parser.js!');
+                        renderLocalParserEditor();
+                    } catch (e) {
+                        new obsidian.Notice('Failed to save file: ' + e.message);
+                    }
+                };
+
+                const deleteBtn = btnRow.createEl('button', { text: '🗑 Delete local-parser.js' });
+                deleteBtn.style.color = 'var(--text-error)';
+                deleteBtn.onclick = () => {
+                    if (confirm("Are you sure you want to delete local-parser.js? This will remove all local calculated metrics rules.")) {
+                        try {
+                            fs.unlinkSync(localParserPath);
+                            new obsidian.Notice('Deleted local-parser.js');
+                            renderLocalParserEditor();
+                        } catch (e) {
+                            new obsidian.Notice('Failed to delete file: ' + e.message);
+                        }
+                    }
+                };
+            } else {
+                const btnRow = localParserContainer.createDiv();
+                btnRow.style.display = 'flex';
+                btnRow.style.gap = '10px';
+                btnRow.style.marginTop = '10px';
+
+                const createBtn = btnRow.createEl('button', { text: '＋ Create Default local-parser.js', cls: 'mod-cta' });
                 createBtn.onclick = () => {
                     const defaultTemplate = `module.exports = {
     extraCards: [
