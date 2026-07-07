@@ -458,11 +458,11 @@ class OmniLoggerPlugin extends obsidian.Plugin {
             // Build the full cards list dynamically including calculated ones
             const cards = [...(this.settings.dashboardCards || [])];
             const extraCards = [
-                { key: 'avgLumosity', label: 'Avg Lumosity', unit: '', agg: 'average', chartType: 'line', color: '#f59e0b' },
-                { key: 'intakes_completed', label: 'Intakes Completed', unit: '', agg: 'average', chartType: 'line', color: '#10b981' },
-                { key: 'auths_completed', label: 'Auths Completed', unit: '', agg: 'average', chartType: 'line', color: '#8b5cf6' },
-                { key: 'calls', label: 'Total Calls', unit: '', agg: 'average', chartType: 'bar', color: '#6366f1' },
-                { key: 'dabs', label: 'Dabs Today', unit: '', agg: 'average', chartType: 'bar', color: '#ec4899' }
+                { key: 'avgLumosity', label: 'Avg Lumosity', unit: '', agg: 'average', chartType: 'line', color: '#f59e0b', chartGroup: 'Cognitive' },
+                { key: 'intakes_completed', label: 'Intakes Completed', unit: '', agg: 'average', chartType: 'line', color: '#10b981', chartGroup: 'Productivity' },
+                { key: 'auths_completed', label: 'Auths Completed', unit: '', agg: 'average', chartType: 'line', color: '#8b5cf6', chartGroup: 'Productivity' },
+                { key: 'calls', label: 'Total Calls', unit: '', agg: 'average', chartType: 'bar', color: '#6366f1', chartGroup: 'Productivity' },
+                { key: 'dabs', label: 'Dabs Today', unit: '', agg: 'average', chartType: 'bar', color: '#ec4899', chartGroup: 'Consumption' }
             ];
             for (let ec of extraCards) {
                 if (!cards.some(c => c.key === ec.key)) {
@@ -522,15 +522,33 @@ class OmniLoggerPlugin extends obsidian.Plugin {
 
             const chartsGrid = dbContainer.createDiv({ cls: 'omni-db-charts-grid' });
             const chartCards = cards.filter(c => c.chartType && c.chartType !== 'none');
+            
+            const groups = {};
+            chartCards.forEach(card => {
+                const groupName = (card.chartGroup || '').trim();
+                if (groupName) {
+                    if (!groups[groupName]) groups[groupName] = [];
+                    groups[groupName].push(card);
+                } else {
+                    groups[`_standalone_${card.key}`] = [card];
+                }
+            });
+
             const canvases = [];
-            chartCards.forEach((card, idx) => {
+            let chartIdx = 0;
+            for (let gName in groups) {
+                const groupCards = groups[gName];
+                const isStandalone = gName.startsWith('_standalone_');
+                const displayTitle = isStandalone ? groupCards[0].label : gName;
+                
                 const chartBox = chartsGrid.createDiv({ cls: 'omni-db-chart-container' });
                 const chartRangeLabel = (configStart || configEnd) ? 'Range' : `${configDays}-Day`;
-                chartBox.createEl('h4', { text: `${card.label} Trend (${chartRangeLabel})`, cls: 'omni-db-chart-title' });
+                chartBox.createEl('h4', { text: `${displayTitle} Trend (${chartRangeLabel})`, cls: 'omni-db-chart-title' });
+                
                 const wrapper = chartBox.createDiv({ cls: 'omni-db-chart-canvas-wrapper' });
-                const canvas = wrapper.createEl('canvas', { attr: { id: `omni_chart_${card.key}_${idx}` } });
-                canvases.push({ canvas, card });
-            });
+                const canvas = wrapper.createEl('canvas', { attr: { id: `omni_chart_g_${chartIdx++}` } });
+                canvases.push({ canvas, cards: groupCards, title: displayTitle });
+            }
 
             const renderAllCharts = () => {
                 const chartData = rangeData;
@@ -539,30 +557,43 @@ class OmniLoggerPlugin extends obsidian.Plugin {
                 const textColor = isDark ? "#b3b3b3" : "#555555";
                 const gridColor = isDark ? "rgba(255,255,255,0.08)" : "rgba(0,0,0,0.06)";
 
-                canvases.forEach(({ canvas, card }) => {
+                canvases.forEach(({ canvas, cards: groupCards, title }) => {
                     const ctx = canvas.getContext('2d');
                     const chartId = `instance_${canvas.id}`;
                     if (window[chartId]) window[chartId].destroy();
                     
+                    const hasBar = groupCards.some(c => c.chartType === 'bar');
+                    const mainType = hasBar ? 'bar' : 'line';
+                    
+                    const datasets = groupCards.map(card => {
+                        const color = card.color || '#6366f1';
+                        return {
+                            type: card.chartType,
+                            label: card.label,
+                            data: chartData.map(d => d[card.key] !== undefined && d[card.key] !== null ? d[card.key] : null),
+                            borderColor: color,
+                            backgroundColor: card.chartType === 'bar' ? color + '66' : color + '1a',
+                            borderWidth: 2,
+                            tension: 0.3,
+                            spanGaps: true
+                        };
+                    });
+                    
                     window[chartId] = new Chart(ctx, {
-                        type: card.chartType,
+                        type: mainType,
                         data: {
                             labels: labels,
-                            datasets: [{
-                                label: card.label,
-                                data: chartData.map(d => d[card.key] || null),
-                                borderColor: card.color || '#6366f1',
-                                backgroundColor: card.chartType === 'bar' ? (card.color || '#6366f1') + '66' : (card.color || '#6366f1') + '1a',
-                                borderWidth: 2,
-                                tension: 0.3,
-                                spanGaps: true
-                            }]
+                            datasets: datasets
                         },
                         options: {
                             responsive: true,
                             maintainAspectRatio: false,
                             plugins: {
-                                legend: { display: false }
+                                legend: { 
+                                    display: groupCards.length > 1,
+                                    position: 'top',
+                                    labels: { color: textColor, font: { size: 9 } }
+                                }
                             },
                             scales: {
                                 x: {
@@ -572,7 +603,7 @@ class OmniLoggerPlugin extends obsidian.Plugin {
                                 y: {
                                     grid: { color: gridColor },
                                     ticks: { color: textColor, font: { size: 9 } },
-                                    beginAtZero: card.chartType === 'bar'
+                                    beginAtZero: hasBar
                                 }
                             }
                         }
@@ -5035,6 +5066,15 @@ class OmniLoggerSettingTab extends obsidian.PluginSettingTab {
                         await this.plugin.saveSettings();
                     };
 
+                    const groupInput = cardRow.createEl('input', { type: 'text', value: card.chartGroup || '' });
+                    groupInput.style.flex = '1.5';
+                    groupInput.style.minWidth = '80px';
+                    groupInput.setAttribute('placeholder', 'Chart Group');
+                    groupInput.onchange = async () => {
+                        card.chartGroup = groupInput.value.trim();
+                        await this.plugin.saveSettings();
+                    };
+
                     const colorInput = cardRow.createEl('input', { type: 'color', value: card.color || '#6366f1' });
                     colorInput.style.width = '40px';
                     colorInput.onchange = async () => {
@@ -5097,6 +5137,9 @@ class OmniLoggerSettingTab extends obsidian.PluginSettingTab {
             const addChart = addRow.createEl('select');
             [['line', 'Line Chart'], ['bar', 'Bar Chart'], ['none', 'No Chart']].forEach(([v, l]) => addChart.createEl('option', { value: v, text: l }));
 
+            const addGroup = addRow.createEl('input', { type: 'text', placeholder: 'Group (e.g. Health)' });
+            addGroup.style.flex = '1.5';
+
             const addColor = addRow.createEl('input', { type: 'color', value: '#6366f1' });
             addColor.style.width = '40px';
 
@@ -5112,7 +5155,8 @@ class OmniLoggerSettingTab extends obsidian.PluginSettingTab {
                     unit: addUnit.value.trim(),
                     agg: addAgg.value,
                     chartType: addChart.value,
-                    color: addColor.value
+                    color: addColor.value,
+                    chartGroup: addGroup.value.trim()
                 });
                 await this.plugin.saveSettings();
                 renderDashboardCardsList();
