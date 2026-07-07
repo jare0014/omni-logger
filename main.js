@@ -909,29 +909,29 @@ class OmniLoggerPlugin extends obsidian.Plugin {
         const folderName = this.settings.ingredientsFolder || 'Omni_Templates';
         
         const ids = new Set([t.id]);
-        if (t.id.startsWith('custom-')) {
-            const baseId = t.id.replace('custom-', '');
-            ids.add(baseId);
-            ids.add(baseId.replace(/-/g, '_'));
-        }
         if (t.id === 'custom-work-calls') {
             ids.add('work_logs');
             ids.add('work-calls');
             ids.add('work_calls');
-        }
-        if (t.id === 'custom-lumosity') {
+        } else if (t.id === 'custom-lumosity') {
             ids.add('lumosity');
         }
         
         for (const cmdId of ids) {
             const fullId = `omni-logger:run-template-${cmdId}`;
-            if (this.app.commands?.commands?.[fullId]) {
+            if (this.app.commands && typeof this.app.commands.removeCommand === 'function') {
+                this.app.commands.removeCommand(fullId);
+            } else if (this.app.commands?.commands?.[fullId]) {
                 delete this.app.commands.commands[fullId];
             }
             
+            const isPrimary = (cmdId === t.id);
+            const cmdName = isPrimary ? `Sync BLE/Metrics: ${t.name}` : `Sync BLE/Metrics: ${t.name} (Legacy: ${cmdId})`;
+            
             this.addCommand({
                 id: `run-template-${cmdId}`,
-                name: `Sync BLE/Metrics: ${t.name}`,
+                name: cmdName,
+
                 callback: () => {
                     if (t.mode === 'ble') {
                         const cleanDirName = t.name.replace(/[^a-zA-Z0-9 _-]/g, '');
