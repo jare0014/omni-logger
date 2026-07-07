@@ -61,7 +61,9 @@ const DEFAULT_SETTINGS = {
         { key: "Sleep_hours", label: "Sleep Hours", unit: "hrs", agg: "average", chartType: "line", color: "#10b981" },
         { key: "Readiness", label: "Readiness", unit: "", agg: "average", chartType: "line", color: "#ec4899" },
         { key: "HRV", label: "HRV", unit: "ms", agg: "average", chartType: "line", color: "#f59e0b" }
-    ]
+    ],
+    openaiApiKeyId: 'omni-logger-openai-api-key',
+    openaiApiKey: ''
 };
 
 
@@ -1323,6 +1325,51 @@ class OmniLoggerPlugin extends obsidian.Plugin {
             
             const resData = response.json;
             return resData.response.trim();
+        } else if (provider === 'openai') {
+            let apiKey = await this.getSecret(this.settings.openaiApiKeyId || 'omni-logger-openai-api-key', 'openaiApiKey');
+            if (!apiKey) {
+                throw new Error("OpenAI API Key not configured! Please configure it in settings.");
+            }
+            const url = 'https://api.openai.com/v1/chat/completions';
+            const messages = [];
+            if (systemPrompt) {
+                messages.push({ role: 'system', content: systemPrompt });
+            }
+            const userContent = [];
+            if (promptText) {
+                userContent.push({ type: 'text', text: promptText });
+            }
+            if (imageBase64 && imageMimeType) {
+                const base64Data = imageBase64.startsWith('data:') ? imageBase64 : `data:${imageMimeType};base64,${imageBase64}`;
+                userContent.push({
+                    type: 'image_url',
+                    image_url: { url: base64Data }
+                });
+            }
+            messages.push({ role: 'user', content: userContent.length === 1 && userContent[0].type === 'text' ? userContent[0].text : userContent });
+
+            const payload = {
+                model: model || 'gpt-4o-mini',
+                messages: messages,
+                response_format: { type: "json_object" }
+            };
+
+            const response = await obsidian.requestUrl({
+                url: url,
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${apiKey}`
+                },
+                body: JSON.stringify(payload)
+            });
+
+            if (response.status !== 200) {
+                throw new Error(`OpenAI API error ${response.status}: ${response.text}`);
+            }
+
+            const resData = response.json;
+            return resData.choices[0].message.content.trim();
         } else {
             throw new Error(`Unsupported LLM provider: ${provider}`);
         }
@@ -3468,6 +3515,7 @@ class OmniLoggerSettingTab extends obsidian.PluginSettingTab {
             .addDropdown(dropdown => dropdown
                 .addOption('gemini', 'Gemini (Google API)')
                 .addOption('ollama', 'Ollama (Local)')
+                .addOption('openai', 'OpenAI (GPT)')
                 .setValue(this.plugin.settings.templateProvider || 'gemini')
                 .onChange(async (value) => {
                     this.plugin.settings.templateProvider = value;
@@ -3475,6 +3523,8 @@ class OmniLoggerSettingTab extends obsidian.PluginSettingTab {
                         this.plugin.settings.templateModel = 'qwen2.5:7b';
                     } else if (value === 'gemini' && this.plugin.settings.templateModel.includes(':')) {
                         this.plugin.settings.templateModel = 'gemini-2.5-flash';
+                    } else if (value === 'openai') {
+                        this.plugin.settings.templateModel = 'gpt-4o-mini';
                     }
                     await this.plugin.saveSettings();
                     this.display(); // full re-render
@@ -3553,6 +3603,80 @@ class OmniLoggerSettingTab extends obsidian.PluginSettingTab {
                         this.plugin.settings.templateModel = value;
                         await this.plugin.saveSettings();
                     }));
+        } else if (this.plugin.settings.templateProvider === 'openai') {
+            let openaiSecretId = this.plugin.settings.openaiApiKeyId || 'omni-logger-openai-api-key';
+            const openaiSetting = new obsidian.Setting(containerEl)
+                .setName('OpenAI API Key')
+                .setDesc('Used for template prompts and OCR parsing.')
+                .addText(text => {
+                    text.inputEl.type = 'password';
+                    text.setPlaceholder('Enter OpenAI API Key');
+                    this.plugin.getSecret(openaiSecretId, 'openaiApiKey').then(secret => {
+                        if (secret && secret.length > 10) {
+                            text.setValue(secret.substring(0, 8) + '...' + secret.substring(secret.length - 4));
+                        }
+                    });
+                    text.onChange(async (value) => {
+                        if (value && value.length > 20) {
+                            await this.plugin.setSecret(openaiSecretId, 'openaiApiKey', value);
+                            let displayStr = value.substring(0, 8) + '...' + value.substring(value.length - 4);
+                            text.setValue(displayStr);
+                            new obsidian.Notice("OpenAI API Key saved!");
+                        } else if (value.trim() === '') {
+                            await this.plugin.setSecret(openaiSecretId, 'openaiApiKey', '');
+                        }
+                    });
+                })
+                .addButton(btn => btn
+                    .setButtonText('Test')
+                    .onClick(async () => {
+                        const key = await this.plugin.getSecret(openaiSecretId, 'openaiApiKey');
+                        if (!key) {
+                            new obsidian.Notice('OpenAI API Key is empty.');
+                            return;
+                        }
+                        btn.setButtonText('Testing...');
+                        try {
+                            const res = await requestWithTimeout({
+                                url: 'https://api.openai.com/v1/models',
+                                method: 'GET',
+                                headers: { 'Authorization': `Bearer ${key}` }
+                            });
+                            if (res.status === 200) {
+                                new obsidian.Notice('OpenAI API connection successful!');
+                                updateBadge(openaiBadge, true, 'Connected');
+                            } else {
+                                new obsidian.Notice(`OpenAI API error: Status ${res.status}`);
+                                updateBadge(openaiBadge, false, 'Error');
+                            }
+                        } catch(e) {
+                            new obsidian.Notice(`OpenAI API connection failed: ${e.message}`);
+                            updateBadge(openaiBadge, false, 'Error');
+                        } finally {
+                            btn.setButtonText('Test');
+                        }
+                    })
+                );
+            const openaiBadge = createStatusBadge(openaiSetting.nameEl);
+            this.plugin.getSecret(openaiSecretId, 'openaiApiKey').then(key => {
+                if(key && key.length > 10) {
+                    requestWithTimeout({ url: 'https://api.openai.com/v1/models', method: 'GET', headers: { 'Authorization': `Bearer ${key}` } })
+                    .then(res => updateBadge(openaiBadge, res.status===200, 'Connected'))
+                    .catch(() => updateBadge(openaiBadge, false, 'Error'));
+                }
+            });
+            
+            new obsidian.Setting(containerEl)
+                .setName('Model')
+                .setDesc('OpenAI model to use.')
+                .addDropdown(dropdown => dropdown
+                    .addOption('gpt-4o-mini', 'GPT-4o Mini')
+                    .addOption('gpt-4o', 'GPT-4o')
+                    .setValue(this.plugin.settings.templateModel || 'gpt-4o-mini')
+                    .onChange(async (value) => {
+                        this.plugin.settings.templateModel = value;
+                        await this.plugin.saveSettings();
+                    }));
         } else {
             const ollamaSetting = new obsidian.Setting(containerEl)
                 .setName('Ollama Server URL')
@@ -3617,6 +3741,7 @@ class OmniLoggerSettingTab extends obsidian.PluginSettingTab {
             .addDropdown(dropdown => dropdown
                 .addOption('gemini', 'Gemini (Google API)')
                 .addOption('ollama', 'Ollama (Local)')
+                .addOption('openai', 'OpenAI (GPT)')
                 .setValue(this.plugin.settings.executorProvider || 'gemini')
                 .onChange(async (value) => {
                     this.plugin.settings.executorProvider = value;
@@ -3624,6 +3749,8 @@ class OmniLoggerSettingTab extends obsidian.PluginSettingTab {
                         this.plugin.settings.executorModel = 'qwen2.5:7b';
                     } else if (value === 'gemini' && this.plugin.settings.executorModel.includes(':')) {
                         this.plugin.settings.executorModel = 'gemini-2.5-flash';
+                    } else if (value === 'openai') {
+                        this.plugin.settings.executorModel = 'gpt-4o-mini';
                     }
                     await this.plugin.saveSettings();
                     this.display(); // full re-render
@@ -3637,6 +3764,18 @@ class OmniLoggerSettingTab extends obsidian.PluginSettingTab {
                     .addOption('gemini-2.5-flash', 'Gemini 2.5 Flash')
                     .addOption('gemini-2.5-pro', 'Gemini 2.5 Pro')
                     .setValue(this.plugin.settings.executorModel || 'gemini-2.5-flash')
+                    .onChange(async (value) => {
+                        this.plugin.settings.executorModel = value;
+                        await this.plugin.saveSettings();
+                    }));
+        } else if (this.plugin.settings.executorProvider === 'openai') {
+            new obsidian.Setting(containerEl)
+                .setName('Execution Model')
+                .setDesc('OpenAI model to use for execution.')
+                .addDropdown(dropdown => dropdown
+                    .addOption('gpt-4o-mini', 'GPT-4o Mini')
+                    .addOption('gpt-4o', 'GPT-4o')
+                    .setValue(this.plugin.settings.executorModel || 'gpt-4o-mini')
                     .onChange(async (value) => {
                         this.plugin.settings.executorModel = value;
                         await this.plugin.saveSettings();
