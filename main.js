@@ -64,7 +64,9 @@ const DEFAULT_SETTINGS = {
     ],
     openaiApiKeyId: 'omni-logger-openai-api-key',
     openaiApiKey: '',
-    localParserPrompt: "Calculate generic custom computed metrics. Example: calculate total active minutes by summing morning_exercise and evening_exercise (chartGroup: 'Fitness'). Calculate average focus score from study_sessions array (chartGroup: 'Productivity')."
+    localParserPrompt: "Calculate generic custom computed metrics. Example: calculate total active minutes by summing morning_exercise and evening_exercise (chartGroup: 'Fitness'). Calculate average focus score from study_sessions array (chartGroup: 'Productivity').",
+    customAvailableKeys: [],
+    blacklistedKeys: []
 };
 
 
@@ -444,6 +446,7 @@ class OmniLoggerPlugin extends obsidian.Plugin {
             }
 
             cards.forEach(card => {
+                if (card.showTile === false) return;
                 const cardEl = grid.createDiv({ cls: 'omni-db-card' });
                 cardEl.createEl('h4', { text: card.label, cls: 'omni-db-card-title' });
                 
@@ -1365,6 +1368,77 @@ class OmniLoggerPlugin extends obsidian.Plugin {
                 }
             }
         }
+    }
+
+    async getRawScannedKeys() {
+        const keys = new Set();
+        
+        // 1. Defaults
+        const googleHealthKeys = ["Sleep_hours", "Sleep_score", "Readiness", "HRV", "caffeine", "alcohol", "hydration", "protein", "calories"];
+        googleHealthKeys.forEach(k => keys.add(k));
+        keys.add("git_commits");
+        
+        // 2. Custom keys
+        const customKeys = this.settings.customAvailableKeys || [];
+        customKeys.forEach(k => keys.add(k));
+        
+        // 3. Scan daily notes
+        try {
+            const dailyFiles = this.app.vault.getMarkdownFiles().filter(file => {
+                const norm = file.path.replace(/\\/g, '/');
+                return norm.includes('02_Journal/01_Daily') && file.name.match(/^\d{4}-\d{2}-\d{2}\.md$/);
+            }).sort((a, b) => b.name.localeCompare(a.name));
+
+            const filesToScan = dailyFiles.slice(0, 30);
+            for (let file of filesToScan) {
+                const cache = this.app.metadataCache.getFileCache(file);
+                if (cache?.frontmatter) {
+                    Object.keys(cache.frontmatter).forEach(k => {
+                        if (k !== 'position' && k !== 'tags' && k !== 'cssclasses') {
+                            keys.add(k);
+                        }
+                    });
+                }
+                
+                const content = await this.app.vault.read(file);
+                const inlineRegex = /^([a-zA-Z0-9_\-]+)::\s*(.+)$/gm;
+                let match;
+                while ((match = inlineRegex.exec(content)) !== null) {
+                    keys.add(match[1].trim());
+                }
+            }
+        } catch (e) {
+            console.error("Error scanning daily notes for keys:", e);
+        }
+        
+        // 4. Custom calculated metric keys from local-parser.js
+        try {
+            const fs = require('fs');
+            const path = require('path');
+            const localParserPath = path.join(this.app.vault.adapter.getBasePath(), '.obsidian', 'plugins', 'omni-logger', 'local-parser.js');
+            if (fs.existsSync(localParserPath)) {
+                const localContent = fs.readFileSync(localParserPath, 'utf8');
+                const moduleObj = { exports: {} };
+                const fn = new Function('module', 'exports', 'require', localContent);
+                fn(moduleObj, moduleObj.exports, require);
+                const localParser = moduleObj.exports;
+                if (localParser && Array.isArray(localParser.extraCards)) {
+                    localParser.extraCards.forEach(card => {
+                        if (card.key) keys.add(card.key);
+                    });
+                }
+            }
+        } catch (e) {
+            console.error("Error reading local-parser.js for keys:", e);
+        }
+
+        return Array.from(keys);
+    }
+
+    async getAvailableKeys() {
+        const raw = await this.getRawScannedKeys();
+        const blacklist = this.settings.blacklistedKeys || [];
+        return raw.filter(k => !blacklist.includes(k));
     }
 
     async callLLM(provider, model, systemPrompt, promptText, imageBase64 = null, imageMimeType = null) {
@@ -5087,6 +5161,22 @@ class OmniLoggerSettingTab extends obsidian.PluginSettingTab {
                         await this.plugin.saveSettings();
                     };
 
+                    const tileLabel = cardRow.createEl('label');
+                    tileLabel.style.display = 'flex';
+                    tileLabel.style.alignItems = 'center';
+                    tileLabel.style.gap = '4px';
+                    tileLabel.style.fontSize = '0.85em';
+                    tileLabel.style.whiteSpace = 'nowrap';
+                    
+                    const tileCheckbox = tileLabel.createEl('input', { type: 'checkbox' });
+                    tileCheckbox.checked = card.showTile !== false;
+                    tileLabel.appendText('Tile');
+                    
+                    tileCheckbox.onchange = async () => {
+                        card.showTile = tileCheckbox.checked;
+                        await this.plugin.saveSettings();
+                    };
+
                     const colorInput = cardRow.createEl('input', { type: 'color', value: card.color || '#6366f1' });
                     colorInput.style.width = '40px';
                     colorInput.onchange = async () => {
@@ -5128,51 +5218,114 @@ class OmniLoggerSettingTab extends obsidian.PluginSettingTab {
                 });
             }
 
-            const addRow = cardsContainer.createDiv();
-            addRow.style.display = 'flex';
-            addRow.style.gap = '8px';
-            addRow.style.marginTop = '15px';
-            addRow.style.paddingTop = '15px';
-            addRow.style.borderTop = '2px dashed var(--background-modifier-border)';
-            addRow.style.alignItems = 'center';
+            const addMetricContainer = cardsContainer.createDiv();
+            addMetricContainer.style.marginTop = '15px';
+            addMetricContainer.style.paddingTop = '15px';
+            addMetricContainer.style.borderTop = '2px dashed var(--background-modifier-border)';
 
-            const addLabel = addRow.createEl('input', { type: 'text', placeholder: 'Label (e.g. Sleep Score)' });
-            addLabel.style.flex = '2';
-            const addKey = addRow.createEl('input', { type: 'text', placeholder: 'Key (e.g. sleep_score)' });
-            addKey.style.flex = '2';
-            const addUnit = addRow.createEl('input', { type: 'text', placeholder: 'Unit (e.g. hrs)' });
-            addUnit.style.flex = '1';
+            let isAdding = false;
 
-            const addAgg = addRow.createEl('select');
-            [['average', 'Average'], ['sum', 'Sum'], ['diff', 'Diff']].forEach(([v, l]) => addAgg.createEl('option', { value: v, text: l }));
+            const renderAddMetricControls = async () => {
+                addMetricContainer.empty();
+                if (!isAdding) {
+                    const btnRow = addMetricContainer.createDiv();
+                    btnRow.style.display = 'flex';
+                    btnRow.style.justifyContent = 'space-between';
+                    btnRow.style.alignItems = 'center';
 
-            const addChart = addRow.createEl('select');
-            [['line', 'Line Chart'], ['bar', 'Bar Chart'], ['none', 'No Chart']].forEach(([v, l]) => addChart.createEl('option', { value: v, text: l }));
+                    const addBtn = btnRow.createEl('button', { text: '＋ Add Metric', cls: 'mod-cta' });
+                    addBtn.onclick = async () => {
+                        isAdding = true;
+                        await renderAddMetricControls();
+                    };
 
-            const addGroup = addRow.createEl('input', { type: 'text', placeholder: 'Group (e.g. Health)' });
-            addGroup.style.flex = '1.5';
+                    const manageBtn = btnRow.createEl('button', { text: '⚙️ Manage Available Keys Pool' });
+                    manageBtn.onclick = () => {
+                        new ManageKeysModal(this.app, this.plugin, async () => {
+                            await renderAddMetricControls();
+                            // Also refresh the cards list if we modified custom keys
+                            renderDashboardCardsList();
+                        }).open();
+                    };
+                } else {
+                    const addFormRow = addMetricContainer.createDiv();
+                    addFormRow.style.display = 'flex';
+                    addFormRow.style.gap = '8px';
+                    addFormRow.style.alignItems = 'center';
 
-            const addColor = addRow.createEl('input', { type: 'color', value: '#6366f1' });
-            addColor.style.width = '40px';
+                    const availableKeys = await this.plugin.getAvailableKeys();
+                    
+                    if (availableKeys.length === 0) {
+                        addFormRow.createSpan({ text: 'No available keys found. Add some in daily notes or settings first!' });
+                    } else {
+                        addFormRow.createSpan({ text: 'Select Key:' });
+                        const keySelect = addFormRow.createEl('select');
+                        availableKeys.forEach(k => {
+                            keySelect.createEl('option', { value: k, text: k });
+                        });
 
-            const addBtn = addRow.createEl('button', { text: '＋ Add Card', cls: 'mod-cta' });
-            addBtn.onclick = async () => {
-                if (!addLabel.value.trim() || !addKey.value.trim()) {
-                    new obsidian.Notice('Please provide both a label and a frontmatter key!');
-                    return;
+                        const confirmBtn = addFormRow.createEl('button', { text: 'Add', cls: 'mod-cta' });
+                        confirmBtn.onclick = async () => {
+                            const selectedKey = keySelect.value;
+                            if (selectedKey) {
+                                const defaultLabel = selectedKey
+                                    .replace(/_/g, ' ')
+                                    .replace(/\b\w/g, c => c.toUpperCase());
+                                
+                                let defaultUnit = '';
+                                let defaultAgg = 'average';
+                                let defaultChart = 'line';
+                                let defaultGroup = '';
+                                let defaultColor = '#6366f1';
+                                
+                                if (selectedKey === 'git_commits') {
+                                    defaultUnit = 'commits';
+                                    defaultAgg = 'sum';
+                                    defaultChart = 'bar';
+                                    defaultGroup = 'Productivity';
+                                    defaultColor = '#10b981';
+                                } else if (selectedKey === 'Sleep_hours') {
+                                    defaultUnit = 'hrs';
+                                    defaultGroup = 'Health';
+                                    defaultColor = '#10b981';
+                                } else if (selectedKey === 'Sleep_score') {
+                                    defaultGroup = 'Health';
+                                    defaultColor = '#6366f1';
+                                } else if (selectedKey === 'Readiness') {
+                                    defaultGroup = 'Health';
+                                    defaultColor = '#ec4899';
+                                } else if (selectedKey === 'HRV') {
+                                    defaultUnit = 'ms';
+                                    defaultGroup = 'Health';
+                                    defaultColor = '#f59e0b';
+                                }
+
+                                cards.push({
+                                    key: selectedKey,
+                                    label: defaultLabel,
+                                    unit: defaultUnit,
+                                    agg: defaultAgg,
+                                    chartType: defaultChart,
+                                    color: defaultColor,
+                                    chartGroup: defaultGroup,
+                                    showTile: true
+                                });
+                                await this.plugin.saveSettings();
+                                isAdding = false;
+                                renderDashboardCardsList();
+                            }
+                        };
+                    }
+
+                    const cancelBtn = addFormRow.createEl('button', { text: 'Cancel' });
+                    cancelBtn.onclick = async () => {
+                        isAdding = false;
+                        await renderAddMetricControls();
+                    };
                 }
-                cards.push({
-                    key: addKey.value.trim(),
-                    label: addLabel.value.trim(),
-                    unit: addUnit.value.trim(),
-                    agg: addAgg.value,
-                    chartType: addChart.value,
-                    color: addColor.value,
-                    chartGroup: addGroup.value.trim()
-                });
-                await this.plugin.saveSettings();
-                renderDashboardCardsList();
             };
+
+            renderAddMetricControls();
         };
 
         renderDashboardCardsList();
@@ -5415,6 +5568,233 @@ Rules:
                 }));
 
         renderLocalParserEditor();
+
+        // =====================================================================
+        // AI Custom Calculated Metric Builder
+        // =====================================================================
+        containerEl.createEl('h3', { text: '🤖 AI Custom Calculated Metric Builder' });
+        containerEl.createEl('p', { 
+            text: 'Select one or more input metric keys, define a new calculation in plain English, and the AI will modularly append this calculation rule into your local-parser.js file.',
+            cls: 'setting-item-description'
+        });
+
+        const builderBox = containerEl.createDiv();
+        builderBox.style.border = '1px solid var(--background-modifier-border)';
+        builderBox.style.borderRadius = '8px';
+        builderBox.style.padding = '15px';
+        builderBox.style.marginBottom = '25px';
+        builderBox.style.backgroundColor = 'var(--background-primary-alt)';
+
+        builderBox.createEl('h4', { text: '1. Select Input Keys:', style: 'margin-top: 0;' });
+        const keysScroll = builderBox.createDiv();
+        keysScroll.style.maxHeight = '120px';
+        keysScroll.style.overflowY = 'auto';
+        keysScroll.style.border = '1px solid var(--background-modifier-border)';
+        keysScroll.style.borderRadius = '4px';
+        keysScroll.style.padding = '8px';
+        keysScroll.style.marginBottom = '15px';
+        keysScroll.style.backgroundColor = 'var(--background-primary)';
+        keysScroll.style.display = 'grid';
+        keysScroll.style.gridTemplateColumns = 'repeat(auto-fill, minmax(160px, 1fr))';
+        keysScroll.style.gap = '8px';
+
+        const selectedKeys = new Set();
+        const renderInputKeysCheckboxes = async () => {
+            keysScroll.empty();
+            const keys = await this.plugin.getAvailableKeys();
+            keys.forEach(k => {
+                const label = keysScroll.createEl('label');
+                label.style.display = 'flex';
+                label.style.alignItems = 'center';
+                label.style.gap = '6px';
+                label.style.cursor = 'pointer';
+                
+                const checkbox = label.createEl('input', { type: 'checkbox' });
+                checkbox.checked = selectedKeys.has(k);
+                checkbox.onchange = () => {
+                    if (checkbox.checked) selectedKeys.add(k);
+                    else selectedKeys.delete(k);
+                };
+                label.appendText(k);
+            });
+            if (keys.length === 0) {
+                keysScroll.createSpan({ text: 'No available keys found.', style: 'color: var(--text-muted)' });
+            }
+        };
+        
+        renderInputKeysCheckboxes();
+
+        builderBox.createEl('h4', { text: '2. Describe Calculation Logic:' });
+        const calcPrompt = builderBox.createEl('textarea');
+        calcPrompt.style.width = '100%';
+        calcPrompt.style.height = '60px';
+        calcPrompt.placeholder = 'e.g. calculate the ratio of HRV to Sleep_hours';
+        calcPrompt.style.marginBottom = '15px';
+
+        builderBox.createEl('h4', { text: '3. New Metric Details:' });
+        
+        const detailsGrid = builderBox.createDiv();
+        detailsGrid.style.display = 'grid';
+        detailsGrid.style.gridTemplateColumns = '1fr 1fr';
+        detailsGrid.style.gap = '10px';
+        detailsGrid.style.marginBottom = '15px';
+        
+        const keyDiv = detailsGrid.createDiv();
+        keyDiv.createSpan({ text: 'Key (no spaces, e.g. hrv_sleep_ratio):', style: 'font-size: 0.85em; display:block; margin-bottom: 4px;' });
+        const keyField = keyDiv.createEl('input', { type: 'text', placeholder: 'hrv_sleep_ratio' });
+        keyField.style.width = '100%';
+        
+        const labelDiv = detailsGrid.createDiv();
+        labelDiv.createSpan({ text: 'Label (Display Title):', style: 'font-size: 0.85em; display:block; margin-bottom: 4px;' });
+        const labelField = labelDiv.createEl('input', { type: 'text', placeholder: 'HRV/Sleep Ratio' });
+        labelField.style.width = '100%';
+
+        const unitDiv = detailsGrid.createDiv();
+        unitDiv.createSpan({ text: 'Unit (e.g. ratio, mg):', style: 'font-size: 0.85em; display:block; margin-bottom: 4px;' });
+        const unitField = unitDiv.createEl('input', { type: 'text', placeholder: 'ratio' });
+        unitField.style.width = '100%';
+
+        const aggDiv = detailsGrid.createDiv();
+        aggDiv.createSpan({ text: 'Aggregation:', style: 'font-size: 0.85em; display:block; margin-bottom: 4px;' });
+        const aggSelect = aggDiv.createEl('select');
+        aggSelect.style.width = '100%';
+        [['average', 'Average'], ['sum', 'Sum'], ['diff', 'Diff']].forEach(([v, l]) => aggSelect.createEl('option', { value: v, text: l }));
+
+        const chartDiv = detailsGrid.createDiv();
+        chartDiv.createSpan({ text: 'Chart Type:', style: 'font-size: 0.85em; display:block; margin-bottom: 4px;' });
+        const chartSelect = chartDiv.createEl('select');
+        chartSelect.style.width = '100%';
+        [['line', 'Line Chart'], ['bar', 'Bar Chart'], ['none', 'No Chart']].forEach(([v, l]) => chartSelect.createEl('option', { value: v, text: l }));
+
+        const groupDiv = detailsGrid.createDiv();
+        groupDiv.createSpan({ text: 'Chart Group (e.g. Cognitive, Health):', style: 'font-size: 0.85em; display:block; margin-bottom: 4px;' });
+        const groupField = groupDiv.createEl('input', { type: 'text', placeholder: 'Health' });
+        groupField.style.width = '100%';
+
+        const colorDiv = detailsGrid.createDiv();
+        colorDiv.createSpan({ text: 'Line/Bar Color:', style: 'font-size: 0.85em; display:block; margin-bottom: 4px;' });
+        const colorField = colorDiv.createEl('input', { type: 'color', value: '#6366f1' });
+        colorField.style.width = '100%';
+
+        const actionRow = builderBox.createDiv();
+        actionRow.style.display = 'flex';
+        actionRow.style.justifyContent = 'flex-end';
+        
+        const buildBtn = actionRow.createEl('button', { text: '🤖 Compile & Add Calculated Metric', cls: 'mod-cta' });
+        buildBtn.onclick = async () => {
+            const promptText = calcPrompt.value.trim();
+            const newKey = keyField.value.trim();
+            const newLabel = labelField.value.trim();
+            
+            if (!newKey || !newLabel || !promptText) {
+                new obsidian.Notice("Please enter a Key, Label, and Calculation logic description!");
+                return;
+            }
+            if (newKey.includes(' ')) {
+                new obsidian.Notice("Key name cannot contain spaces. Use underscores!");
+                return;
+            }
+
+            buildBtn.setDisabled(true);
+            buildBtn.setButtonText("Compiling...");
+            new obsidian.Notice("Sending request to LLM (this may take a few seconds)...");
+
+            try {
+                const provider = this.plugin.settings.templateProvider || 'gemini';
+                const model = this.plugin.settings.templateModel || '';
+
+                const fs = require('fs');
+                const path = require('path');
+                const localParserPath = path.join(this.plugin.app.vault.adapter.getBasePath(), '.obsidian', 'plugins', 'omni-logger', 'local-parser.js');
+
+                const currentParserContent = fs.existsSync(localParserPath) 
+                    ? fs.readFileSync(localParserPath, 'utf8')
+                    : `module.exports = { extraCards: [], parseMetrics: function(frontmatter, inlineData, parsedRow, state, getVal) {} };`;
+
+                const inputKeysArr = Array.from(selectedKeys);
+
+                const systemPrompt = `You are an expert Javascript programmer specializing in writing parsing and calculation logic for daily biometrics/logs.
+Your task is to modularly update a local-parser.js file to add a new calculated metric.
+
+The local-parser.js file has this structure:
+\`\`\`javascript
+module.exports = {
+    extraCards: [
+        // array of card configs
+    ],
+    parseMetrics: function(frontmatter, inlineData, parsedRow, state, getVal, content) {
+        // calculation logic
+    }
+};
+\`\`\`
+
+You must update the code to:
+1. Merge a new card configuration into \`extraCards\`:
+{
+    "key": "${newKey}",
+    "label": "${newLabel}",
+    "unit": "${unitField.value.trim()}",
+    "agg": "${aggSelect.value}",
+    "chartType": "${chartSelect.value}",
+    "color": "${colorField.value}",
+    "chartGroup": "${groupField.value.trim()}"
+}
+If a card with this key already exists in \`extraCards\`, update/overwrite its configuration.
+
+2. Add the calculation logic for the key "${newKey}" inside the \`parseMetrics\` function.
+The calculation logic should use the following input keys: ${inputKeysArr.join(', ')}.
+The natural language rule is: "${promptText}".
+Make sure to extract these inputs safely using \`getVal('KeyName')\`.
+Make sure to parse these input values to float safely (e.g. check for undefined, empty string, or non-numeric values).
+Assign the calculated result to \`parsedRow['${newKey}']\`.
+If the calculation requires comparison with previous days, use properties on the \`state\` object (which is passed in and preserved across calls, e.g. \`state.prevVal\`).
+Preserve ALL existing calculations and cards in the file. Only add or update the logic for this new key "${newKey}".
+
+Return ONLY valid, executable Javascript code wrapped inside a markdown \`\`\`javascript ... \`\`\` code block. Do not include any HTML, explanations, or text outside the code block.`;
+
+                const userPrompt = `Here is the current local-parser.js code:
+\`\`\`javascript
+${currentParserContent}
+\`\`\`
+
+Please update this code to add the new calculated metric "${newKey}" based on the natural language rule: "${promptText}".`;
+
+                const response = await this.plugin.callLLM(
+                    provider,
+                    model,
+                    systemPrompt,
+                    userPrompt
+                );
+
+                let code = response.trim();
+                const match = code.match(/```javascript([\s\S]*?)```/) || code.match(/```js([\s\S]*?)```/);
+                if (match) {
+                    code = match[1].trim();
+                }
+
+                fs.writeFileSync(localParserPath, code, 'utf8');
+                new obsidian.Notice(`Successfully compiled and added "${newLabel}" to local-parser.js!`);
+                
+                // Clear fields
+                calcPrompt.value = '';
+                keyField.value = '';
+                labelField.value = '';
+                unitField.value = '';
+                groupField.value = '';
+                selectedKeys.clear();
+                
+                // Re-render components
+                await renderInputKeysCheckboxes();
+                renderLocalParserEditor(); // reload the dev editor
+                renderDashboardCardsList(); // reload cards list & its dropdowns
+            } catch (e) {
+                console.error(e);
+                new obsidian.Notice('AI Compilation failed: ' + e.message);
+            } finally {
+                buildBtn.setDisabled(false);
+                buildBtn.setButtonText("🤖 Compile & Add Calculated Metric");
+            }
+        };
 
     }
 }
@@ -7215,6 +7595,137 @@ class OmniApiWizardModal extends obsidian.Modal {
             new obsidian.Notice(`Connection "${this.name}" saved!`);
             this.onSave();
             this.close();
+        };
+    }
+
+    onClose() {
+        this.contentEl.empty();
+    }
+}
+
+class ManageKeysModal extends obsidian.Modal {
+    constructor(app, plugin, onUpdate) {
+        super(app);
+        this.plugin = plugin;
+        this.onUpdate = onUpdate;
+    }
+
+    async onOpen() {
+        const { contentEl } = this;
+        contentEl.empty();
+        contentEl.createEl('h3', { text: '⚙️ Manage Available Keys Pool' });
+        contentEl.createEl('p', { 
+            text: 'This is the pool of keys available when adding new dashboard cards. You can manually add custom keys or hide/blacklist auto-detected keys.',
+            cls: 'setting-item-description' 
+        });
+
+        const listContainer = contentEl.createDiv();
+        listContainer.style.maxHeight = '200px';
+        listContainer.style.overflowY = 'auto';
+        listContainer.style.border = '1px solid var(--background-modifier-border)';
+        listContainer.style.borderRadius = '6px';
+        listContainer.style.padding = '10px';
+        listContainer.style.marginBottom = '15px';
+
+        const renderList = async () => {
+            listContainer.empty();
+            const allScannedKeys = await this.plugin.getRawScannedKeys();
+            const blacklisted = this.plugin.settings.blacklistedKeys || [];
+            
+            const activeKeys = allScannedKeys.filter(k => !blacklisted.includes(k));
+            
+            activeKeys.forEach(key => {
+                const row = listContainer.createDiv();
+                row.style.display = 'flex';
+                row.style.justifyContent = 'space-between';
+                row.style.alignItems = 'center';
+                row.style.padding = '6px 0';
+                row.style.borderBottom = '1px solid var(--background-modifier-border-focus)';
+                
+                row.createSpan({ text: key });
+                
+                const removeBtn = row.createEl('button', { text: 'Hide' });
+                removeBtn.style.color = 'var(--text-error)';
+                removeBtn.onclick = async () => {
+                    if (!this.plugin.settings.blacklistedKeys) this.plugin.settings.blacklistedKeys = [];
+                    if (!this.plugin.settings.blacklistedKeys.includes(key)) {
+                        this.plugin.settings.blacklistedKeys.push(key);
+                    }
+                    this.plugin.settings.customAvailableKeys = (this.plugin.settings.customAvailableKeys || []).filter(k => k !== key);
+                    
+                    await this.plugin.saveSettings();
+                    await renderList();
+                    this.onOpen();
+                    if (this.onUpdate) this.onUpdate();
+                };
+            });
+
+            if (activeKeys.length === 0) {
+                listContainer.createSpan({ text: 'No active keys in pool.', style: 'color: var(--text-muted)' });
+            }
+        };
+
+        await renderList();
+
+        const blacklisted = this.plugin.settings.blacklistedKeys || [];
+        if (blacklisted.length > 0) {
+            contentEl.createEl('h4', { text: 'Hidden Keys' });
+            
+            const restoreContainer = contentEl.createDiv();
+            restoreContainer.style.maxHeight = '120px';
+            restoreContainer.style.overflowY = 'auto';
+            restoreContainer.style.border = '1px solid var(--background-modifier-border)';
+            restoreContainer.style.borderRadius = '6px';
+            restoreContainer.style.padding = '10px';
+            restoreContainer.style.marginBottom = '15px';
+
+            blacklisted.forEach(key => {
+                const row = restoreContainer.createDiv();
+                row.style.display = 'flex';
+                row.style.justifyContent = 'space-between';
+                row.style.alignItems = 'center';
+                row.style.padding = '4px 0';
+                
+                row.createSpan({ text: key });
+                
+                const restoreBtn = row.createEl('button', { text: 'Restore' });
+                restoreBtn.onclick = async () => {
+                    this.plugin.settings.blacklistedKeys = this.plugin.settings.blacklistedKeys.filter(k => k !== key);
+                    await this.plugin.saveSettings();
+                    this.onOpen();
+                    if (this.onUpdate) this.onUpdate();
+                };
+            });
+        }
+
+        const addContainer = contentEl.createDiv();
+        addContainer.style.display = 'flex';
+        addContainer.style.gap = '8px';
+        addContainer.style.alignItems = 'center';
+        addContainer.style.marginTop = '15px';
+
+        const keyInput = addContainer.createEl('input', { type: 'text', placeholder: 'New key name (e.g. custom_metric)' });
+        keyInput.style.flex = '1';
+        
+        const addBtn = addContainer.createEl('button', { text: 'Add Custom Key', cls: 'mod-cta' });
+        addBtn.onclick = async () => {
+            const val = keyInput.value.trim();
+            if (!val) {
+                new obsidian.Notice("Please enter a key name!");
+                return;
+            }
+            if (!this.plugin.settings.customAvailableKeys) this.plugin.settings.customAvailableKeys = [];
+            if (!this.plugin.settings.customAvailableKeys.includes(val)) {
+                this.plugin.settings.customAvailableKeys.push(val);
+            }
+            if (this.plugin.settings.blacklistedKeys) {
+                this.plugin.settings.blacklistedKeys = this.plugin.settings.blacklistedKeys.filter(k => k !== val);
+            }
+            await this.plugin.saveSettings();
+            keyInput.value = '';
+            new obsidian.Notice(`Added ${val} to available keys pool!`);
+            this.onOpen();
+            if (this.onUpdate) this.onUpdate();
         };
     }
 
