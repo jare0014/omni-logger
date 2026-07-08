@@ -24,3 +24,8 @@ Chatbot Discussions/
 
 # Ignore local parser config
 local-parser.js
+
+# Ignore local files
+ag-stop-probe.json
+diff.txt
+diff*.txt
