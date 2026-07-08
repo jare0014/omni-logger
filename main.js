@@ -883,6 +883,14 @@ class OmniLoggerPlugin extends obsidian.Plugin {
         });
 
         this.addCommand({
+            id: 'open-health-history',
+            name: 'Open Google Health History Manager',
+            callback: () => {
+                new OmniHealthHistoryModal(this.app, this).open();
+            }
+        });
+
+        this.addCommand({
             id: 'hl7-nl-query',
             name: 'Run HL7 NL-to-SQL Query',
             callback: () => this.runHL7QueryScript()
@@ -6583,10 +6591,17 @@ class OmniFoodLoggerModal extends obsidian.Modal {
         const tabLog = tabHeader.createSpan({ text: 'Log Food' });
         const tabAdd = tabHeader.createSpan({ text: 'Add to Registry' });
         const tabManage = tabHeader.createSpan({ text: 'Manage Registry' });
+        const tabHistory = tabHeader.createSpan({ text: 'History' });
         
         tabLog.style.cursor = 'pointer';
         tabAdd.style.cursor = 'pointer';
         tabManage.style.cursor = 'pointer';
+        tabHistory.style.cursor = 'pointer';
+        
+        tabHistory.onclick = () => {
+            this.close();
+            new OmniHealthHistoryModal(this.app, this.plugin).open();
+        };
         
         const mainContainer = contentEl.createDiv();
         
@@ -7121,8 +7136,9 @@ class OmniHealthHistoryModal extends obsidian.Modal {
                     } else if (this.dataType === "hydration-log") {
                         const log = pt.hydrationLog || {};
                         const amount = log.amountConsumed?.milliliters || 0;
-                        title = `💧 Water (${amount} ml)`;
-                        details = `${Math.round(amount * 0.033814)} oz`;
+                        const oz = Math.round(amount * 0.033814);
+                        title = `💧 Water (${oz} fl oz)`;
+                        details = `${amount} ml`;
                         timeStr = log.interval?.endTime ? new Date(log.interval.endTime).toLocaleString() : "Unknown Time";
                     }
                     
@@ -7196,6 +7212,11 @@ class OmniHealthHistoryModal extends obsidian.Modal {
                 
                 if (response.status === 200 || response.status === 204) {
                     new obsidian.Notice(`Successfully deleted ${count} entries!`);
+                    try {
+                        await this.plugin.pullGoogleHealthData();
+                    } catch(e) {
+                        console.error("Failed to sync after deletion:", e);
+                    }
                     await renderList();
                 } else {
                     new obsidian.Notice(`Failed to delete: ${response.status} - ${response.text}`);

@@ -282,8 +282,8 @@ def get_google_health_data(token, date_str):
             points = data.get("dataPoints", [])
             print(f"Sleep API returned {len(points)} data points.")
             if points:
-                points.sort(key=lambda p: p.get("sleep", {}).get("interval", {}).get("endTime", ""), reverse=True)
-                main_sleep = points[0].get("sleep", {})
+                points.sort(key=lambda p: (p.get("sleep") or {}).get("interval", {}).get("endTime", ""), reverse=True)
+                main_sleep = points[0].get("sleep") or {}
                 
                 total_mins = int(main_sleep.get("summary", {}).get("minutesAsleep", 0))
                 hours = total_mins // 60
@@ -318,9 +318,10 @@ def get_google_health_data(token, date_str):
             data = res.json()
             points = data.get("dataPoints", [])
             if points:
-                val = points[0].get("dailyHeartRateVariability", {}).get("averageHeartRateVariabilityMilliseconds", 0)
+                hrv_obj = points[0].get("dailyHeartRateVariability") or {}
+                val = hrv_obj.get("averageHeartRateVariabilityMilliseconds", 0)
                 if not val:
-                    val = points[0].get("dailyHeartRateVariability", {}).get("deepSleepRootMeanSquareOfSuccessiveDifferencesMilliseconds", 0)
+                    val = hrv_obj.get("deepSleepRootMeanSquareOfSuccessiveDifferencesMilliseconds", 0)
                 results["HRV"] = round(val)
         else:
             print(f"Warning: Google Health API HRV endpoint returned status {res.status_code}: {res.text}")
@@ -344,7 +345,7 @@ def get_google_health_data(token, date_str):
             data = res.json()
             points = data.get("dataPoints", [])
             for pt in points:
-                val_obj = pt.get("nutritionLog", pt.get("value", {}))
+                val_obj = pt.get("nutritionLog") or pt.get("value") or {}
                 interval = val_obj.get("interval", {})
                 start_time_str = interval.get("startTime", "")
                 if not start_time_str:
@@ -411,7 +412,7 @@ def get_google_health_data(token, date_str):
             points = data.get("dataPoints", [])
             alc_count = 0.0
             for pt in points:
-                val_obj = pt.get("alcoholConsumption", pt.get("value", {}))
+                val_obj = pt.get("alcoholConsumption") or pt.get("value") or {}
                 interval = val_obj.get("interval", {})
                 start_time_str = interval.get("startTime", "")
                 if not start_time_str:
@@ -431,7 +432,7 @@ def get_google_health_data(token, date_str):
             points = data.get("dataPoints", [])
             hyd_sum = 0.0
             for pt in points:
-                val_obj = pt.get("hydrationLog", pt.get("value", {}))
+                val_obj = pt.get("hydrationLog") or pt.get("value") or {}
                 interval = val_obj.get("interval", {})
                 start_time_str = interval.get("startTime", "")
                 if not start_time_str:
