@@ -2184,6 +2184,15 @@ class OmniLoggerPlugin extends obsidian.Plugin {
             
             const dayStartIso = `${dateStr}T00:00:00${localTz}`;
             const dayEndIso = `${dateStr}T23:59:59${localTz}`;
+            // Compare as real timestamps, not raw strings — the API returns UTC "Z" timestamps
+            // which sort incorrectly against a "-05:00"-style boundary string.
+            const dayStartMs = new Date(dayStartIso).getTime();
+            const dayEndMs = new Date(dayEndIso).getTime();
+            const inDayRange = (timeStr) => {
+                if (!timeStr) return false;
+                const ms = new Date(timeStr).getTime();
+                return !isNaN(ms) && ms >= dayStartMs && ms <= dayEndMs;
+            };
 
             if (t.id === 'google-sleep') {
                 const filter = `sleep.interval.end_time >= "${startIso}" AND sleep.interval.end_time < "${endIso}"`;
@@ -2205,7 +2214,7 @@ class OmniLoggerPlugin extends obsidian.Plugin {
                                 return dateStr === now.toISOString().split('T')[0];
                             }
                             const timeStr = pt.dailyHeartRateVariability?.interval?.startTime || pt.value?.interval?.startTime || pt.startTime || "";
-                            return timeStr && timeStr >= dayStartIso && timeStr < dayEndIso;
+                            return inDayRange(timeStr);
                         }));
                         if (resHrv.json?.nextPageToken) {
                             url = hrvUrl + "?pageSize=1000&pageToken=" + resHrv.json.nextPageToken;
@@ -2227,7 +2236,7 @@ class OmniLoggerPlugin extends obsidian.Plugin {
                         const points = response.json?.dataPoints || [];
                         hydPoints.push(...points.filter(pt => {
                             const timeStr = pt.hydrationLog?.interval?.startTime || pt.value?.interval?.startTime || "";
-                            return timeStr && timeStr >= dayStartIso && timeStr <= dayEndIso;
+                            return inDayRange(timeStr);
                         }));
                         if (response.json?.nextPageToken) {
                             url = hydUrl + "?pageSize=1000&pageToken=" + response.json.nextPageToken;
@@ -2252,7 +2261,7 @@ class OmniLoggerPlugin extends obsidian.Plugin {
                         const points = resNut.json?.dataPoints || [];
                         nutPoints.push(...points.filter(pt => {
                             const timeStr = pt.nutritionLog?.interval?.startTime || pt.value?.interval?.startTime || "";
-                            return timeStr && timeStr >= dayStartIso && timeStr <= dayEndIso;
+                            return inDayRange(timeStr);
                         }));
                         if (resNut.json?.nextPageToken) {
                             url = nutritionUrl + "?pageSize=1000&pageToken=" + resNut.json.nextPageToken;
@@ -2271,7 +2280,7 @@ class OmniLoggerPlugin extends obsidian.Plugin {
                         const points = resAlc.json?.dataPoints || [];
                         alcPoints.push(...points.filter(pt => {
                             const timeStr = pt.alcoholConsumption?.interval?.startTime || pt.value?.interval?.startTime || "";
-                            return timeStr && timeStr >= dayStartIso && timeStr <= dayEndIso;
+                            return inDayRange(timeStr);
                         }));
                         if (resAlc.json?.nextPageToken) {
                             url = alcUrl + "?pageSize=1000&pageToken=" + resAlc.json.nextPageToken;

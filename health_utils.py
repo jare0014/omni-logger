@@ -228,25 +228,34 @@ def load_health_sync_config():
         "hydration": {"enabled": True, "key": "hydration", "destination": "frontmatter"}
     }
 
+def is_same_local_date(utc_time_str, target_date_str, local_tz):
+    try:
+        clean_str = utc_time_str
+        if clean_str.endswith("Z"):
+            clean_str = clean_str[:-1] + "+00:00"
+        dt_utc = datetime.datetime.fromisoformat(clean_str)
+        dt_local = dt_utc.astimezone(local_tz)
+        return dt_local.strftime("%Y-%m-%d") == target_date_str
+    except Exception as e:
+        print(f"Warning: failed to parse/convert timestamp {utc_time_str}: {e}")
+        return False
+
 def get_google_health_data(token, date_str):
     headers = {"Authorization": f"Bearer {token}"}
     
     local_tz = datetime.datetime.now().astimezone().tzinfo
-    date_dt = datetime.datetime.strptime(date_str, "%Y-%m-%d").replace(tzinfo=local_tz)
     
-    # Sleep session window (noon yesterday to noon today)
-    start_dt = (date_dt - datetime.timedelta(days=1)).replace(hour=12, minute=0, second=0, microsecond=0)
-    end_dt = date_dt.replace(hour=12, minute=0, second=0, microsecond=0)
+    # Correctly parse local target day start and end in local time
+    # To handle DST transitions, we construct local datetime and convert to UTC
+    date_dt = datetime.datetime.strptime(date_str, "%Y-%m-%d")
+    local_base_dt = datetime.datetime(date_dt.year, date_dt.month, date_dt.day, tzinfo=local_tz)
+    
+    # Sleep session window (noon yesterday to noon today in local timezone, then converted to UTC)
+    start_dt = (local_base_dt - datetime.timedelta(days=1)).replace(hour=12, minute=0, second=0, microsecond=0)
+    end_dt = local_base_dt.replace(hour=12, minute=0, second=0, microsecond=0)
     
     start_iso = start_dt.astimezone(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     end_iso = end_dt.astimezone(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-    
-    # Active day window (00:00:00 to 23:59:59 local on target day) for active logs
-    day_start_dt = date_dt.replace(hour=0, minute=0, second=0, microsecond=0)
-    day_end_dt = date_dt.replace(hour=23, minute=59, second=59, microsecond=0)
-    
-    day_start_iso = day_start_dt.astimezone(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-    day_end_iso = day_end_dt.astimezone(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     
     sleep_filter = f'sleep.interval.end_time >= "{start_iso}" AND sleep.interval.end_time < "{end_iso}"'
     sleep_url = f"https://health.googleapis.com/v4/users/me/dataTypes/sleep/dataPoints?filter={urllib.parse.quote(sleep_filter)}"
@@ -341,7 +350,7 @@ def get_google_health_data(token, date_str):
                 if not start_time_str:
                     continue
                 # Local check to match target day
-                if day_start_iso <= start_time_str <= day_end_iso:
+                if is_same_local_date(start_time_str, date_str, local_tz):
                     name = (val_obj.get("foodDisplayName") or val_obj.get("foodName") or val_obj.get("name") or val_obj.get("title") or "").lower()
                     
                     nutrients_list = val_obj.get("nutrients", [])
@@ -407,7 +416,7 @@ def get_google_health_data(token, date_str):
                 start_time_str = interval.get("startTime", "")
                 if not start_time_str:
                     continue
-                if day_start_iso <= start_time_str <= day_end_iso:
+                if is_same_local_date(start_time_str, date_str, local_tz):
                     alc_count += val_obj.get("amount", 14.0)
             results["alcohol"] = round(alc_count + (results["alcohol"] or 0.0))
     except Exception as e:
@@ -427,7 +436,7 @@ def get_google_health_data(token, date_str):
                 start_time_str = interval.get("startTime", "")
                 if not start_time_str:
                     continue
-                if day_start_iso <= start_time_str <= day_end_iso:
+                if is_same_local_date(start_time_str, date_str, local_tz):
                     amount_consumed = val_obj.get("amountConsumed", {})
                     volume = amount_consumed.get("milliliters", 0.0) if isinstance(amount_consumed, dict) else val_obj.get("amount", val_obj.get("volume", 0.0))
                     hyd_sum += volume if "amountConsumed" in val_obj else (volume * 1000.0)
