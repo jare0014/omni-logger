@@ -36,7 +36,7 @@ const DEFAULT_SETTINGS = {
     googleHealthSleepPrompt: 'Examine the raw Google Fitness API JSON payload representing my sleep sessions for today. Extract the longest sleep session and calculate the total sleep duration (minutesAsleep). Output the sleep duration in the exact format H:MM (e.g. 7:04). Also extract the wake up time from the end of the session, making sure to apply the endUtcOffset to convert the Zulu time into local time (e.g. if time is 09:54Z and offset is -18000s (5 hours), local time is 04:54). Format the wake up time as H:MM (24-hour time or just without AM/PM). Your output MUST be a valid JSON object with keys like "Sleep" and "Wakeup". Do not wrap in markdown blocks. Example: { "Sleep": "7:05", "Wakeup": "4:54" }',
     googleHealthVitalsPrompt: 'Examine the raw Google Fitness API JSON payload representing heart rate variability (HRV) for today. Extract the averageHeartRateVariabilityMilliseconds or RMSSD metric. Round the value to the nearest integer. Your output MUST be a valid JSON object with keys like "HRV". Example: { "HRV": 44 }',
     googleHealthNutritionPrompt: 'Examine the raw Google Fitness API JSON payload representing my food logs for today. Summarize total caffeine, alcohol, protein, and calories. IMPORTANT: The API may provide caffeine and alcohol in GRAMS (e.g. 0.225 grams). You MUST convert this to MILLIGRAMS (mg) by multiplying by 1000 (e.g. 0.225g = 225mg). Output values as numbers without units. If any nutrient is missing from the payload, output 0 for that nutrient. Your output MUST be a valid JSON object with exactly these keys: "caffeine", "alcohol", "protein", "calories". Example: { "caffeine": 225, "alcohol": 0, "protein": 0, "calories": 0 }',
-    googleHealthHydrationPrompt: 'Examine the raw Google Fitness API JSON payload representing hydration. Summarize total water intake in milliliters. Your output MUST be a valid JSON object with keys like "hydration". Example: { "hydration": 750 }',
+    googleHealthHydrationPrompt: 'Examine the raw Google Fitness API JSON payload representing hydration. Summarize total water intake in fluid ounces (fl oz). Note: The payload contains volumes in liters or milliliters (e.g. 0.25 liters = 250 ml = 8.45 fl oz). To convert milliliters to fluid ounces, divide milliliters by 29.5735 (or round to nearest integer). Your output MUST be a valid JSON object with keys like "hydration". Example: { "hydration": 25 }',
     gitRepoPaths: [
         "c:\\Users\\jare0\\Documents\\Obsidian",
         "c:\\Users\\jare0\\Documents\\Obsidian\\04_Projects\\Quant",
@@ -2261,7 +2261,7 @@ class OmniLoggerPlugin extends obsidian.Plugin {
                         }
                     }
                 }
-                return { hydration: Math.round(totalMl) };
+                return { hydration: Math.round(totalMl / 29.5735) };
             }
             
             if (templateId === 'google-nutrition') {

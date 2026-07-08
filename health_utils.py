@@ -440,7 +440,7 @@ def get_google_health_data(token, date_str):
                     amount_consumed = val_obj.get("amountConsumed", {})
                     volume = amount_consumed.get("milliliters", 0.0) if isinstance(amount_consumed, dict) else val_obj.get("amount", val_obj.get("volume", 0.0))
                     hyd_sum += volume if "amountConsumed" in val_obj else (volume * 1000.0)
-            results["hydration"] = round(hyd_sum)
+            results["hydration"] = round(hyd_sum / 29.5735)
     except Exception as e:
         print(f"Warning: Google Health hydration pull failed: {e}")
         
