@@ -355,7 +355,7 @@ class OmniLoggerPlugin extends obsidian.Plugin {
                 };
 
                 const parsedRow = { date: dateStr };
-                const settingsCards = this.settings.dashboardCards || [];
+                const settingsCards = (localParser && Array.isArray(localParser.extraCards)) ? localParser.extraCards : [];
                 settingsCards.forEach(card => {
                     const rawVal = getVal(card.key);
                     let val = 0;
@@ -435,15 +435,8 @@ class OmniLoggerPlugin extends obsidian.Plugin {
 
             const grid = dbContainer.createDiv({ cls: 'omni-db-grid' });
             
-            // Build the full cards list dynamically including calculated ones
-            const cards = [...(this.settings.dashboardCards || [])];
-            if (localParser && Array.isArray(localParser.extraCards)) {
-                localParser.extraCards.forEach(ec => {
-                    if (!cards.some(c => c.key === ec.key)) {
-                        cards.push(ec);
-                    }
-                });
-            }
+            // Build the full cards list dynamically from local-parser.js
+            const cards = (localParser && Array.isArray(localParser.extraCards)) ? [...localParser.extraCards] : [];
 
             cards.forEach(card => {
                 if (card.showTile === false) return;
@@ -626,7 +619,23 @@ class OmniLoggerPlugin extends obsidian.Plugin {
         markdown += `Report compiled on: ${now.format('YYYY-MM-DD HH:mm:ss')}\n`;
         markdown += `Period: ${startOfLastWeek.format('YYYY-MM-DD')} to ${endOfLastWeek.format('YYYY-MM-DD')}\n\n`;
         
-        const cards = this.settings.dashboardCards || [];
+        let localParser = null;
+        try {
+            const fs = require('fs');
+            const path = require('path');
+            const localParserPath = path.join(this.app.vault.adapter.getBasePath(), '.obsidian', 'plugins', 'omni-logger', 'local-parser.js');
+            if (fs.existsSync(localParserPath)) {
+                const localContent = fs.readFileSync(localParserPath, 'utf8');
+                const moduleObj = { exports: {} };
+                const fn = new Function('module', 'exports', 'require', localContent);
+                fn(moduleObj, moduleObj.exports, require);
+                localParser = moduleObj.exports;
+            }
+        } catch (e) {
+            console.error("Failed to load local parser for weekly report:", e);
+        }
+        
+        const cards = (localParser && Array.isArray(localParser.extraCards)) ? localParser.extraCards : [];
         markdown += `## 📈 Summary Metrics\n\n`;
         markdown += `| Date | ` + cards.map(c => c.label).join(' | ') + ` |\n`;
         markdown += `| --- | ` + cards.map(() => '---').join(' | ') + ` |\n`;
@@ -776,6 +785,44 @@ class OmniLoggerPlugin extends obsidian.Plugin {
 
     async onload() {
         await this.loadSettings();
+        
+        // Initialize default local-parser.js if missing
+        const fs = require('fs');
+        const path = require('path');
+        const localParserPath = path.join(this.app.vault.adapter.getBasePath(), '.obsidian', 'plugins', 'omni-logger', 'local-parser.js');
+        if (!fs.existsSync(localParserPath)) {
+            const defaultTemplate = `module.exports = {
+    extraCards: [
+        { key: "Sleep_score", label: "Sleep Score", unit: "", agg: "average", chartType: "line", color: "#6366f1", showTile: true },
+        { key: "Sleep_hours", label: "Sleep Hours", unit: "hrs", agg: "average", chartType: "line", color: "#10b981", showTile: true },
+        { key: "Readiness", label: "Readiness", unit: "", agg: "average", chartType: "line", color: "#ec4899", showTile: true },
+        { key: "HRV", label: "HRV", unit: "ms", agg: "average", chartType: "line", color: "#f59e0b", showTile: true }
+    ],
+    parseMetrics: function(frontmatter, inlineData, parsedRow, state, getVal, content) {
+        // Safe float parser helper
+        const parseFloatSafe = (value) => {
+            if (typeof value === 'string') {
+                value = value.replace(/,/g, '');
+            }
+            const num = parseFloat(value);
+            return isNaN(num) ? undefined : num;
+        };
+
+        // Extract default health metrics from note
+        parsedRow['Sleep_score'] = parseFloatSafe(getVal('Sleep_score'));
+        parsedRow['Sleep_hours'] = parseFloatSafe(getVal('Sleep_hours'));
+        parsedRow['Readiness'] = parseFloatSafe(getVal('Readiness'));
+        parsedRow['HRV'] = parseFloatSafe(getVal('HRV'));
+    }
+};`;
+            try {
+                fs.writeFileSync(localParserPath, defaultTemplate, 'utf8');
+                console.log("[Omni-Logger] Initialized default local-parser.js successfully");
+            } catch (e) {
+                console.error("[Omni-Logger] Failed to initialize default local-parser.js:", e);
+            }
+        }
+
         await this.loadLocalSettings();
         this.initializeDefaultConnectionsAndTemplates();
         await this.saveSettings();
@@ -1439,6 +1486,45 @@ class OmniLoggerPlugin extends obsidian.Plugin {
         const raw = await this.getRawScannedKeys();
         const blacklist = this.settings.blacklistedKeys || [];
         return raw.filter(k => !blacklist.includes(k));
+    }
+
+    async saveLocalParserCards(extraCards) {
+        const fs = require('fs');
+        const path = require('path');
+        const localParserPath = path.join(this.app.vault.adapter.getBasePath(), '.obsidian', 'plugins', 'omni-logger', 'local-parser.js');
+        
+        let parseMetricsStr = `function(frontmatter, inlineData, parsedRow, state, getVal, content) {}`;
+        try {
+            if (fs.existsSync(localParserPath)) {
+                const localContent = fs.readFileSync(localParserPath, 'utf8');
+                const moduleObj = { exports: {} };
+                const fn = new Function('module', 'exports', 'require', localContent);
+                fn(moduleObj, moduleObj.exports, require);
+                if (moduleObj.exports && typeof moduleObj.exports.parseMetrics === 'function') {
+                    parseMetricsStr = moduleObj.exports.parseMetrics.toString();
+                }
+            }
+        } catch(e) {
+            console.error("Error extracting parseMetrics function:", e);
+            try {
+                const localContent = fs.readFileSync(localParserPath, 'utf8');
+                const match = localContent.match(/parseMetrics\s*:\s*(function\s*\([\s\S]*)/);
+                if (match) {
+                    let code = match[1].trim();
+                    if (code.endsWith('};')) code = code.slice(0, -2).trim();
+                    if (code.endsWith('}')) code = code.slice(0, -1).trim();
+                    parseMetricsStr = code;
+                }
+            } catch(e2) {}
+        }
+
+        const cardsJson = JSON.stringify(extraCards, null, 4);
+        const newContent = `module.exports = {
+    extraCards: ${cardsJson},
+    parseMetrics: ${parseMetricsStr}
+};`;
+
+        fs.writeFileSync(localParserPath, newContent, 'utf8');
     }
 
     async callLLM(provider, model, systemPrompt, promptText, imageBase64 = null, imageMimeType = null) {
@@ -5089,7 +5175,24 @@ class OmniLoggerSettingTab extends obsidian.PluginSettingTab {
 
         const renderDashboardCardsList = () => {
             cardsContainer.empty();
-            const cards = this.plugin.settings.dashboardCards || [];
+            
+            let localParser = null;
+            try {
+                const fs = require('fs');
+                const path = require('path');
+                const localParserPath = path.join(this.plugin.app.vault.adapter.getBasePath(), '.obsidian', 'plugins', 'omni-logger', 'local-parser.js');
+                if (fs.existsSync(localParserPath)) {
+                    const localContent = fs.readFileSync(localParserPath, 'utf8');
+                    const moduleObj = { exports: {} };
+                    const fn = new Function('module', 'exports', 'require', localContent);
+                    fn(moduleObj, moduleObj.exports, require);
+                    localParser = moduleObj.exports;
+                }
+            } catch (e) {
+                console.error("Settings Tab: Failed to load local parser:", e);
+            }
+            
+            const cards = (localParser && Array.isArray(localParser.extraCards)) ? localParser.extraCards : [];
 
             if (cards.length === 0) {
                 const emptyMsg = cardsContainer.createDiv({ text: 'No dashboard cards configured. Create one below!' });
@@ -5111,7 +5214,7 @@ class OmniLoggerSettingTab extends obsidian.PluginSettingTab {
                     labelInput.setAttribute('placeholder', 'Label');
                     labelInput.onchange = async () => {
                         card.label = labelInput.value;
-                        await this.plugin.saveSettings();
+                        await this.plugin.saveLocalParserCards(cards);
                     };
 
                     const keyInput = cardRow.createEl('input', { type: 'text', value: card.key });
@@ -5120,7 +5223,7 @@ class OmniLoggerSettingTab extends obsidian.PluginSettingTab {
                     keyInput.setAttribute('placeholder', 'Frontmatter Key');
                     keyInput.onchange = async () => {
                         card.key = keyInput.value;
-                        await this.plugin.saveSettings();
+                        await this.plugin.saveLocalParserCards(cards);
                     };
 
                     const unitInput = cardRow.createEl('input', { type: 'text', value: card.unit || '' });
@@ -5129,7 +5232,7 @@ class OmniLoggerSettingTab extends obsidian.PluginSettingTab {
                     unitInput.setAttribute('placeholder', 'Unit');
                     unitInput.onchange = async () => {
                         card.unit = unitInput.value;
-                        await this.plugin.saveSettings();
+                        await this.plugin.saveLocalParserCards(cards);
                     };
 
                     const aggSelect = cardRow.createEl('select');
@@ -5139,7 +5242,7 @@ class OmniLoggerSettingTab extends obsidian.PluginSettingTab {
                     });
                     aggSelect.onchange = async () => {
                         card.agg = aggSelect.value;
-                        await this.plugin.saveSettings();
+                        await this.plugin.saveLocalParserCards(cards);
                     };
 
                     const chartSelect = cardRow.createEl('select');
@@ -5149,7 +5252,7 @@ class OmniLoggerSettingTab extends obsidian.PluginSettingTab {
                     });
                     chartSelect.onchange = async () => {
                         card.chartType = chartSelect.value;
-                        await this.plugin.saveSettings();
+                        await this.plugin.saveLocalParserCards(cards);
                     };
 
                     const groupInput = cardRow.createEl('input', { type: 'text', value: card.chartGroup || '' });
@@ -5158,7 +5261,7 @@ class OmniLoggerSettingTab extends obsidian.PluginSettingTab {
                     groupInput.setAttribute('placeholder', 'Chart Group');
                     groupInput.onchange = async () => {
                         card.chartGroup = groupInput.value.trim();
-                        await this.plugin.saveSettings();
+                        await this.plugin.saveLocalParserCards(cards);
                     };
 
                     const tileLabel = cardRow.createEl('label');
@@ -5174,14 +5277,14 @@ class OmniLoggerSettingTab extends obsidian.PluginSettingTab {
                     
                     tileCheckbox.onchange = async () => {
                         card.showTile = tileCheckbox.checked;
-                        await this.plugin.saveSettings();
+                        await this.plugin.saveLocalParserCards(cards);
                     };
 
                     const colorInput = cardRow.createEl('input', { type: 'color', value: card.color || '#6366f1' });
                     colorInput.style.width = '40px';
                     colorInput.onchange = async () => {
                         card.color = colorInput.value;
-                        await this.plugin.saveSettings();
+                        await this.plugin.saveLocalParserCards(cards);
                     };
 
                     const btnContainer = cardRow.createDiv();
@@ -5194,7 +5297,7 @@ class OmniLoggerSettingTab extends obsidian.PluginSettingTab {
                         const temp = cards[index - 1];
                         cards[index - 1] = card;
                         cards[index] = temp;
-                        await this.plugin.saveSettings();
+                        await this.plugin.saveLocalParserCards(cards);
                         renderDashboardCardsList();
                     };
 
@@ -5204,7 +5307,7 @@ class OmniLoggerSettingTab extends obsidian.PluginSettingTab {
                         const temp = cards[index + 1];
                         cards[index + 1] = card;
                         cards[index] = temp;
-                        await this.plugin.saveSettings();
+                        await this.plugin.saveLocalParserCards(cards);
                         renderDashboardCardsList();
                     };
 
@@ -5212,7 +5315,7 @@ class OmniLoggerSettingTab extends obsidian.PluginSettingTab {
                     delBtn.style.color = 'var(--text-error)';
                     delBtn.onclick = async () => {
                         cards.splice(index, 1);
-                        await this.plugin.saveSettings();
+                        await this.plugin.saveLocalParserCards(cards);
                         renderDashboardCardsList();
                     };
                 });
@@ -5310,7 +5413,7 @@ class OmniLoggerSettingTab extends obsidian.PluginSettingTab {
                                     chartGroup: defaultGroup,
                                     showTile: true
                                 });
-                                await this.plugin.saveSettings();
+                                await this.plugin.saveLocalParserCards(cards);
                                 isAdding = false;
                                 renderDashboardCardsList();
                             }
@@ -5330,244 +5433,7 @@ class OmniLoggerSettingTab extends obsidian.PluginSettingTab {
 
         renderDashboardCardsList();
 
-        // 🔒 Local Parser Code Editor (Developer Settings)
-        containerEl.createEl('h3', { text: '🔒 Local Metrics Parser Configuration' });
-        containerEl.createEl('p', { 
-            text: 'Define custom computed cards (e.g. sum-ups, odometer differences) and metrics parsing logic locally. This configuration file (local-parser.js) is ignored by git and stays private to your device.',
-            cls: 'setting-item-description'
-        });
 
-        new obsidian.Setting(containerEl)
-            .setName('AI Compilation Prompt')
-            .setDesc('Describe how your custom local metrics should be calculated in plain English. Click "Compile Parser with AI" to generate the code automatically.')
-            .addTextArea(text => {
-                text.inputEl.style.width = '100%';
-                text.inputEl.style.height = '80px';
-                text.setPlaceholder('Describe your calculations here...')
-                    .setValue(this.plugin.settings.localParserPrompt || '')
-                    .onChange(async (value) => {
-                        this.plugin.settings.localParserPrompt = value;
-                        await this.plugin.saveSettings();
-                    });
-            });
-
-        const localParserContainer = containerEl.createDiv();
-        localParserContainer.style.marginTop = '10px';
-        localParserContainer.style.marginBottom = '25px';
-
-        const renderLocalParserEditor = () => {
-            localParserContainer.empty();
-            
-            const fs = require('fs');
-            const path = require('path');
-            const localParserPath = path.join(this.plugin.app.vault.adapter.getBasePath(), '.obsidian', 'plugins', 'omni-logger', 'local-parser.js');
-            
-            let localContent = "";
-            let exists = false;
-            
-            if (fs.existsSync(localParserPath)) {
-                exists = true;
-                try {
-                    localContent = fs.readFileSync(localParserPath, 'utf8');
-                } catch(e) {
-                    localContent = `// Error reading file: ${e.message}`;
-                }
-            } else {
-                localContent = `// local-parser.js not found. Click "Create Default Parser" or type a prompt above and click "Compile Parser with AI" to initialize.`;
-            }
-
-            if (exists) {
-                const editorTextarea = localParserContainer.createEl('textarea');
-                editorTextarea.style.width = '100%';
-                editorTextarea.style.height = '300px';
-                editorTextarea.style.fontFamily = 'monospace';
-                editorTextarea.style.fontSize = '12px';
-                editorTextarea.style.padding = '10px';
-                editorTextarea.style.borderRadius = '6px';
-                editorTextarea.style.backgroundColor = 'var(--background-primary-alt)';
-                editorTextarea.style.border = '1px solid var(--background-modifier-border)';
-                editorTextarea.style.color = 'var(--text-normal)';
-                editorTextarea.value = localContent;
-
-                const btnRow = localParserContainer.createDiv();
-                btnRow.style.display = 'flex';
-                btnRow.style.gap = '10px';
-                btnRow.style.marginTop = '10px';
-
-                const saveBtn = btnRow.createEl('button', { text: '💾 Save local-parser.js', cls: 'mod-cta' });
-                saveBtn.onclick = () => {
-                    try {
-                        fs.writeFileSync(localParserPath, editorTextarea.value, 'utf8');
-                        new obsidian.Notice('Successfully saved local-parser.js!');
-                        renderLocalParserEditor();
-                    } catch (e) {
-                        new obsidian.Notice('Failed to save file: ' + e.message);
-                    }
-                };
-
-                const deleteBtn = btnRow.createEl('button', { text: '🗑 Delete local-parser.js' });
-                deleteBtn.style.color = 'var(--text-error)';
-                deleteBtn.onclick = () => {
-                    if (confirm("Are you sure you want to delete local-parser.js? This will remove all local calculated metrics rules.")) {
-                        try {
-                            fs.unlinkSync(localParserPath);
-                            new obsidian.Notice('Deleted local-parser.js');
-                            renderLocalParserEditor();
-                        } catch (e) {
-                            new obsidian.Notice('Failed to delete file: ' + e.message);
-                        }
-                    }
-                };
-            } else {
-                const btnRow = localParserContainer.createDiv();
-                btnRow.style.display = 'flex';
-                btnRow.style.gap = '10px';
-                btnRow.style.marginTop = '10px';
-
-                const createBtn = btnRow.createEl('button', { text: '＋ Create Default local-parser.js', cls: 'mod-cta' });
-                createBtn.onclick = () => {
-                    const defaultTemplate = `module.exports = {
-    extraCards: [
-        { key: 'avgLumosity', label: 'Avg Lumosity', unit: '', agg: 'average', chartType: 'line', color: '#f59e0b', chartGroup: 'Cognitive' },
-        { key: 'intakes_completed', label: 'Intakes Completed', unit: '', agg: 'average', chartType: 'line', color: '#10b981', chartGroup: 'Productivity' },
-        { key: 'auths_completed', label: 'Auths Completed', unit: '', agg: 'average', chartType: 'line', color: '#8b5cf6', chartGroup: 'Productivity' },
-        { key: 'calls', label: 'Total Calls', unit: '', agg: 'average', chartType: 'bar', color: '#6366f1', chartGroup: 'Productivity' },
-        { key: 'dabs', label: 'Dabs Today', unit: '', agg: 'average', chartType: 'bar', color: '#ec4899', chartGroup: 'Consumption' }
-    ],
-    parseMetrics: function(frontmatter, inlineData, parsedRow, state, getVal) {
-        // 1. Avg Lumosity
-        const dailyScores = Array.isArray(frontmatter.scores) ? frontmatter.scores : (frontmatter.scores ? [frontmatter.scores] : []);
-        let sumScores = 0, countScores = 0;
-        for (let s of dailyScores) {
-            if (s && s.score !== undefined && s.score !== null) {
-                const scVal = parseFloat(String(s.score).replace(/[^0-9.-]/g, ""));
-                if (!isNaN(scVal) && scVal > 0) {
-                    sumScores += scVal;
-                    countScores++;
-                }
-            }
-        }
-        parsedRow['avgLumosity'] = countScores > 0 ? Math.round(sumScores / countScores) : 0;
-
-        // 2. Intakes and Auths completed
-        const getFloatVal = (k) => {
-            const v = getVal(k);
-            if (v === undefined || v === null || v === "") return 0;
-            return parseFloat(String(v).replace(/[^0-9.-]/g, "")) || 0;
-        };
-        parsedRow['intakes_completed'] = getFloatVal('intakes_completed');
-        parsedRow['auths_completed'] = getFloatVal('auths_completed');
-        parsedRow['intakes_new'] = getFloatVal('intakes_new');
-        parsedRow['auths_new'] = getFloatVal('auths_new');
-
-        // 3. Calls
-        let callsCount = 0;
-        const callKeys = [
-            "calls-08am", "calls-09am", "calls-10am", "calls-11am",
-            "calls-12pm", "calls-01pm", "calls-02pm", "calls-03pm", "calls-04pm"
-        ];
-        for (let k of callKeys) {
-            const v = getVal(k);
-            if (v) callsCount += parseFloat(String(v).replace(/[^0-9.-]/g, "")) || 0;
-        }
-        parsedRow['calls'] = callsCount;
-
-        // 4. Dabs
-        const currentOdom = parseFloat(String(getVal('Puffco_odometer') || getVal('puffco_odometer') || "").replace(/[^0-9.-]/g, "")) || 0;
-        let dabsDiff = 0;
-        if (currentOdom > 0 && state.prevOdom > 0) {
-            dabsDiff = currentOdom - state.prevOdom;
-        }
-        if (currentOdom > 0) {
-            state.prevOdom = currentOdom;
-        }
-        parsedRow['dabs'] = dabsDiff;
-    }
-};`;
-                    try {
-                        fs.writeFileSync(localParserPath, defaultTemplate, 'utf8');
-                        new obsidian.Notice('Created local-parser.js successfully!');
-                        renderLocalParserEditor();
-                    } catch (e) {
-                        new obsidian.Notice('Failed to create file: ' + e.message);
-                    }
-                };
-            }
-        };
-
-        const compileSetting = new obsidian.Setting(containerEl)
-            .setName('AI Compile Rules')
-            .setDesc('Generates local-parser.js using the template generation model based on your prompt above.')
-            .addButton(btn => btn
-                .setButtonText('🤖 Compile Parser with AI')
-                .setCta()
-                .onClick(async () => {
-                    const prompt = this.plugin.settings.localParserPrompt;
-                    if (!prompt || !prompt.trim()) {
-                        new obsidian.Notice("Please write a prompt describing your metrics calculations first!");
-                        return;
-                    }
-
-                    btn.setDisabled(true);
-                    btn.setButtonText('Compiling...');
-                    new obsidian.Notice("Sending request to LLM (this may take a few seconds)...");
-
-                    try {
-                        const provider = this.plugin.settings.templateProvider || 'gemini';
-                        const model = this.plugin.settings.templateModel || '';
-                        
-                        const systemPrompt = `You are an expert Javascript programmer writing parsing logic for an Obsidian dashboard.
-Your job is to generate a \`local-parser.js\` module.
-
-The module MUST export an object with this exact structure:
-\`\`\`javascript
-module.exports = {
-    extraCards: [
-        { key: 'key_name', label: 'Display Label', unit: 'unit', agg: 'average' | 'sum', chartType: 'line' | 'bar' | 'none', color: '#hex', chartGroup: 'Group Name' }
-    ],
-    parseMetrics: function(frontmatter, inlineData, parsedRow, state, getVal) {
-        // Parsing logic
-    }
-};
-\`\`\`
-Rules:
-1. In \`extraCards\`, define each metric you are tracking. \`key\` is the property name in \`parsedRow\`.
-2. In \`parseMetrics\`, extract the raw inputs using \`getVal('propertyName')\`. The keys are case-insensitive.
-3. Convert raw values to float safely (e.g. handle undefined, empty, or non-numeric strings).
-4. Assign the calculated values directly to \`parsedRow['key_name']\`.
-5. If a metric requires delta tracking across days (like an odometer), mutate the \`state\` object (e.g., use \`state.prevOdom\` to remember the previous day's value. Note that state starts empty).
-6. Return ONLY valid, executable Javascript code wrapped inside a markdown \`\`\`javascript ... \`\`\` code block. Do not include any HTML, explanations, or text outside the code block.`;
-
-                        const response = await this.plugin.callLLM(
-                            provider,
-                            model,
-                            systemPrompt,
-                            `Generate a local-parser.js file for the following requirements:\n"${prompt}"`
-                        );
-
-                        let code = response.trim();
-                        const match = code.match(/```javascript([\s\S]*?)```/) || code.match(/```js([\s\S]*?)```/);
-                        if (match) {
-                            code = match[1].trim();
-                        }
-
-                        const fs = require('fs');
-                        const path = require('path');
-                        const localParserPath = path.join(this.plugin.app.vault.adapter.getBasePath(), '.obsidian', 'plugins', 'omni-logger', 'local-parser.js');
-                        
-                        fs.writeFileSync(localParserPath, code, 'utf8');
-                        new obsidian.Notice('Successfully compiled and saved local-parser.js using AI!');
-                        renderLocalParserEditor();
-                    } catch (e) {
-                        console.error(e);
-                        new obsidian.Notice('AI Compilation failed: ' + e.message);
-                    } finally {
-                        btn.setDisabled(false);
-                        btn.setButtonText('🤖 Compile Parser with AI');
-                    }
-                }));
-
-        renderLocalParserEditor();
 
         // =====================================================================
         // AI Custom Calculated Metric Builder
@@ -5785,7 +5651,6 @@ Please update this code to add the new calculated metric "${newKey}" based on th
                 
                 // Re-render components
                 await renderInputKeysCheckboxes();
-                renderLocalParserEditor(); // reload the dev editor
                 renderDashboardCardsList(); // reload cards list & its dropdowns
             } catch (e) {
                 console.error(e);
