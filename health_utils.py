@@ -28,6 +28,16 @@ FITBIT_TOKEN_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fi
 def get_google_access_token():
     token_path = TOKEN_PATH
     if not os.path.exists(token_path):
+        # Fallback to sibling schedule-assistant-focus-timer directory's token.json
+        sibling_path = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            "schedule-assistant-focus-timer",
+            "token.json"
+        )
+        if os.path.exists(sibling_path):
+            token_path = sibling_path
+
+    if not os.path.exists(token_path):
         raise FileNotFoundError(
             f"Google Health token.json not found. Please authorize through Omni-Logger or Schedule Assistant settings first."
         )

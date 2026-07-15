@@ -292,6 +292,8 @@ class OmniLoggerPlugin extends obsidian.Plugin {
             let configStart = null;
             let configEnd = null;
             
+            const yamlOverrides = {};
+            
             if (source) {
                 const YAML = require('yaml');
                 try {
@@ -301,6 +303,29 @@ class OmniLoggerPlugin extends obsidian.Plugin {
                         if (parsedConfig['exclude-weekends'] !== undefined) configExcludeWeekends = !!parsedConfig['exclude-weekends'];
                         if (parsedConfig.start !== undefined) configStart = String(parsedConfig.start).trim();
                         if (parsedConfig.end !== undefined) configEnd = String(parsedConfig.end).trim();
+                        
+                        for (let key in parsedConfig) {
+                            if (key.startsWith('exclude-weekends-')) {
+                                const target = key.replace('exclude-weekends-', '').trim();
+                                yamlOverrides[target] = !!parsedConfig[key];
+                            }
+                        }
+                        if (parsedConfig.metrics && typeof parsedConfig.metrics === 'object') {
+                            for (let mKey in parsedConfig.metrics) {
+                                const mCfg = parsedConfig.metrics[mKey];
+                                if (mCfg && mCfg['exclude-weekends'] !== undefined) {
+                                    yamlOverrides[mKey] = !!mCfg['exclude-weekends'];
+                                }
+                            }
+                        }
+                        if (parsedConfig.groups && typeof parsedConfig.groups === 'object') {
+                            for (let gKey in parsedConfig.groups) {
+                                const gCfg = parsedConfig.groups[gKey];
+                                if (gCfg && gCfg['exclude-weekends'] !== undefined) {
+                                    yamlOverrides[gKey] = !!gCfg['exclude-weekends'];
+                                }
+                            }
+                        }
                     }
                 } catch(e) {}
             }
@@ -438,10 +463,69 @@ class OmniLoggerPlugin extends obsidian.Plugin {
             // Build the full cards list dynamically from local-parser.js
             const cards = (localParser && Array.isArray(localParser.extraCards)) ? [...localParser.extraCards] : [];
 
+            const getExcludeWeekendsForMetric = (metricKey, groupName) => {
+                if (yamlOverrides[metricKey] !== undefined) return yamlOverrides[metricKey];
+                if (groupName && yamlOverrides[groupName] !== undefined) return yamlOverrides[groupName];
+                const card = cards.find(c => c.key === metricKey);
+                if (card && card.excludeWeekends !== undefined) return card.excludeWeekends;
+                return configExcludeWeekends;
+            };
+
             cards.forEach(card => {
                 if (card.showTile === false) return;
                 const cardEl = grid.createDiv({ cls: 'omni-db-card' });
-                cardEl.createEl('h4', { text: card.label, cls: 'omni-db-card-title' });
+                
+                let excludeWeekends = getExcludeWeekendsForMetric(card.key, card.chartGroup);
+                
+                const headerRow = cardEl.createDiv();
+                headerRow.style.display = 'flex';
+                headerRow.style.justifyContent = 'space-between';
+                headerRow.style.alignItems = 'center';
+                headerRow.style.marginBottom = '8px';
+
+                const titleEl = headerRow.createEl('h4', { text: card.label, cls: 'omni-db-card-title' });
+                titleEl.style.margin = '0';
+
+                const badgeEl = document.createElement('span');
+                badgeEl.style.cursor = 'pointer';
+                badgeEl.style.fontSize = '0.75em';
+                badgeEl.style.padding = '2px 8px';
+                badgeEl.style.borderRadius = '12px';
+                badgeEl.style.fontWeight = '500';
+                badgeEl.style.transition = 'all 0.2s';
+                badgeEl.style.display = 'inline-block';
+                badgeEl.style.border = '1px solid var(--background-modifier-border)';
+
+                const setBadgeStyle = () => {
+                    if (excludeWeekends) {
+                        badgeEl.textContent = 'Excl Wknd';
+                        badgeEl.style.background = 'linear-gradient(90deg, #818cf8, #ec4899)';
+                        badgeEl.style.color = '#ffffff';
+                        badgeEl.style.border = 'none';
+                    } else {
+                        badgeEl.textContent = 'Incl Wknd';
+                        badgeEl.style.background = 'var(--background-secondary-alt)';
+                        badgeEl.style.color = 'var(--text-muted)';
+                        badgeEl.style.border = '1px solid var(--background-modifier-border)';
+                    }
+                };
+
+                badgeEl.onclick = async (e) => {
+                    e.stopPropagation();
+                    excludeWeekends = !excludeWeekends;
+                    setBadgeStyle();
+                    updateCardBaseline();
+                    
+                    const localCards = (localParser && Array.isArray(localParser.extraCards)) ? localParser.extraCards : [];
+                    const targetCard = localCards.find(c => c.key === card.key);
+                    if (targetCard) {
+                        targetCard.excludeWeekends = excludeWeekends;
+                        await this.saveLocalParserCards(localCards);
+                    }
+                };
+
+                setBadgeStyle();
+                headerRow.appendChild(badgeEl);
                 
                 const val = latest[card.key] || 0;
                 let formattedVal = val;
@@ -460,33 +544,47 @@ class OmniLoggerPlugin extends obsidian.Plugin {
                     valEl.appendChild(unitSpan);
                 }
 
-                let sum = 0, count = 0;
-                filteredBaseline.forEach(d => {
-                    if (d[card.key] !== undefined && d[card.key] !== null) {
-                        sum += d[card.key];
-                        count++;
-                    }
-                });
-                const baselineAvg = count > 0 ? (sum / count) : 0;
-                const diff = val - baselineAvg;
+                const trendEl = cardEl.createDiv();
                 
-                let trendClass = 'omni-trend-neutral';
-                let trendText = 'No baseline';
-                
-                if (baselineAvg > 0 && val > 0) {
-                    const pct = Math.round((diff / baselineAvg) * 100);
-                    const sign = pct >= 0 ? '+' : '';
-                    trendText = `${sign}${pct}% vs avg (${Math.round(baselineAvg)})`;
+                const updateCardBaseline = () => {
+                    const metricBaseline = excludeWeekends
+                        ? baselineDays.filter(d => {
+                            const day = window.moment(d.date).day();
+                            return day !== 0 && day !== 6;
+                        })
+                        : baselineDays;
+
+                    let sum = 0, count = 0;
+                    metricBaseline.forEach(d => {
+                        if (d[card.key] !== undefined && d[card.key] !== null) {
+                            sum += d[card.key];
+                            count++;
+                        }
+                    });
+                    const baselineAvg = count > 0 ? (sum / count) : 0;
+                    const diff = val - baselineAvg;
                     
-                    if (pct === 0) {
-                        trendClass = 'omni-trend-neutral';
-                    } else if (pct > 0) {
-                        trendClass = 'omni-trend-up';
-                    } else {
-                        trendClass = 'omni-trend-down';
+                    let trendClass = 'omni-trend-neutral';
+                    let trendText = 'No baseline';
+                    
+                    if (baselineAvg > 0 && val > 0) {
+                        const pct = Math.round((diff / baselineAvg) * 100);
+                        const sign = pct >= 0 ? '+' : '';
+                        trendText = `${sign}${pct}% vs avg (${Math.round(baselineAvg)})`;
+                        
+                        if (pct === 0) {
+                            trendClass = 'omni-trend-neutral';
+                        } else if (pct > 0) {
+                            trendClass = 'omni-trend-up';
+                        } else {
+                            trendClass = 'omni-trend-down';
+                        }
                     }
-                }
-                cardEl.createEl('div', { text: trendText, cls: `omni-db-card-trend ${trendClass}` });
+                    trendEl.textContent = trendText;
+                    trendEl.className = `omni-db-card-trend ${trendClass}`;
+                };
+
+                updateCardBaseline();
             });
 
             const chartsGrid = dbContainer.createDiv({ cls: 'omni-db-charts-grid' });
@@ -511,73 +609,165 @@ class OmniLoggerPlugin extends obsidian.Plugin {
                 const displayTitle = isStandalone ? groupCards[0].label : gName;
                 
                 const chartBox = chartsGrid.createDiv({ cls: 'omni-db-chart-container' });
+                
+                const chartHeader = chartBox.createDiv();
+                chartHeader.style.display = 'flex';
+                chartHeader.style.justifyContent = 'space-between';
+                chartHeader.style.alignItems = 'center';
+                chartHeader.style.marginBottom = '16px';
+                
                 const chartRangeLabel = (configStart || configEnd) ? 'Range' : `${configDays}-Day`;
-                chartBox.createEl('h4', { text: `${displayTitle} Trend (${chartRangeLabel})`, cls: 'omni-db-chart-title' });
+                const titleEl = chartHeader.createEl('h4', { text: `${displayTitle} Trend (${chartRangeLabel})`, cls: 'omni-db-chart-title' });
+                titleEl.style.margin = '0';
+                titleEl.style.borderLeft = '3px solid var(--interactive-accent)';
+                titleEl.style.paddingLeft = '8px';
+                
+                let chartExcludeWeekends = false;
+                const groupName = isStandalone ? '' : gName;
+                if (groupName && yamlOverrides[groupName] !== undefined) {
+                    chartExcludeWeekends = yamlOverrides[groupName];
+                } else if (isStandalone && yamlOverrides[groupCards[0].key] !== undefined) {
+                    chartExcludeWeekends = yamlOverrides[groupCards[0].key];
+                } else {
+                    const targetKey = groupName || groupCards[0].key;
+                    if (this.settings.groupExcludeWeekends && this.settings.groupExcludeWeekends[targetKey] !== undefined) {
+                        chartExcludeWeekends = this.settings.groupExcludeWeekends[targetKey];
+                    } else if (isStandalone) {
+                        const card = groupCards[0];
+                        chartExcludeWeekends = (card && card.excludeWeekends === true);
+                    } else {
+                        const groupCardsWithConfig = groupCards.filter(c => c.excludeWeekends !== undefined);
+                        if (groupCardsWithConfig.length > 0) {
+                            chartExcludeWeekends = groupCardsWithConfig.some(c => c.excludeWeekends === true);
+                        } else {
+                            chartExcludeWeekends = configExcludeWeekends;
+                        }
+                    }
+                }
+                
+                const chartBadgeEl = document.createElement('span');
+                chartBadgeEl.style.cursor = 'pointer';
+                chartBadgeEl.style.fontSize = '0.75em';
+                chartBadgeEl.style.padding = '2px 8px';
+                chartBadgeEl.style.borderRadius = '12px';
+                chartBadgeEl.style.fontWeight = '500';
+                chartBadgeEl.style.transition = 'all 0.2s';
+                chartBadgeEl.style.display = 'inline-block';
+                chartBadgeEl.style.border = '1px solid var(--background-modifier-border)';
+
+                const setChartBadgeStyle = () => {
+                    if (chartExcludeWeekends) {
+                        chartBadgeEl.textContent = 'Excl Wknd';
+                        chartBadgeEl.style.background = 'linear-gradient(90deg, #818cf8, #ec4899)';
+                        chartBadgeEl.style.color = '#ffffff';
+                        chartBadgeEl.style.border = 'none';
+                    } else {
+                        chartBadgeEl.textContent = 'Incl Wknd';
+                        chartBadgeEl.style.background = 'var(--background-secondary-alt)';
+                        chartBadgeEl.style.color = 'var(--text-muted)';
+                        chartBadgeEl.style.border = '1px solid var(--background-modifier-border)';
+                    }
+                };
+                setChartBadgeStyle();
+                chartHeader.appendChild(chartBadgeEl);
                 
                 const wrapper = chartBox.createDiv({ cls: 'omni-db-chart-canvas-wrapper' });
                 const canvas = wrapper.createEl('canvas', { attr: { id: `omni_chart_g_${chartIdx++}` } });
-                canvases.push({ canvas, cards: groupCards, title: displayTitle });
+                
+                const canvasObj = { 
+                    canvas, 
+                    cards: groupCards, 
+                    title: displayTitle, 
+                    get excludeWeekends() { return chartExcludeWeekends; },
+                    set excludeWeekends(v) { chartExcludeWeekends = v; setChartBadgeStyle(); }
+                };
+                
+                chartBadgeEl.onclick = async (e) => {
+                    e.stopPropagation();
+                    canvasObj.excludeWeekends = !canvasObj.excludeWeekends;
+                    renderSingleChart(canvasObj);
+                    
+                    if (!this.settings.groupExcludeWeekends) {
+                        this.settings.groupExcludeWeekends = {};
+                    }
+                    const targetKey = groupName || canvasObj.cards[0].key;
+                    this.settings.groupExcludeWeekends[targetKey] = canvasObj.excludeWeekends;
+                    await this.saveSettings();
+                };
+                
+                canvases.push(canvasObj);
             }
 
-            const renderAllCharts = () => {
-                const chartData = rangeData;
-                const labels = chartData.map(d => d.date.substring(5));
+            const renderSingleChart = (canvasObj) => {
+                const { canvas, cards: groupCards } = canvasObj;
+                const chartExcludeWeekends = canvasObj.excludeWeekends;
+                
                 const isDark = document.body.classList.contains("theme-dark");
                 const textColor = isDark ? "#b3b3b3" : "#555555";
                 const gridColor = isDark ? "rgba(255,255,255,0.08)" : "rgba(0,0,0,0.06)";
+                
+                const filteredChartData = chartExcludeWeekends
+                    ? rangeData.filter(d => {
+                        const day = window.moment(d.date).day();
+                        return day !== 0 && day !== 6;
+                    })
+                    : rangeData;
 
-                canvases.forEach(({ canvas, cards: groupCards, title }) => {
-                    const ctx = canvas.getContext('2d');
-                    const chartId = `instance_${canvas.id}`;
-                    if (window[chartId]) window[chartId].destroy();
-                    
-                    const hasBar = groupCards.some(c => c.chartType === 'bar');
-                    const mainType = hasBar ? 'bar' : 'line';
-                    
-                    const datasets = groupCards.map(card => {
-                        const color = card.color || '#6366f1';
-                        return {
-                            type: card.chartType,
-                            label: card.label,
-                            data: chartData.map(d => d[card.key] !== undefined && d[card.key] !== null ? d[card.key] : null),
-                            borderColor: color,
-                            backgroundColor: card.chartType === 'bar' ? color + '66' : color + '1a',
-                            borderWidth: 2,
-                            tension: 0.3,
-                            spanGaps: true
-                        };
-                    });
-                    
-                    window[chartId] = new Chart(ctx, {
-                        type: mainType,
-                        data: {
-                            labels: labels,
-                            datasets: datasets
+                const labels = filteredChartData.map(d => d.date.substring(5));
+                const ctx = canvas.getContext('2d');
+                const chartId = `instance_${canvas.id}`;
+                if (window[chartId]) window[chartId].destroy();
+                
+                const hasBar = groupCards.some(c => c.chartType === 'bar');
+                const mainType = hasBar ? 'bar' : 'line';
+                
+                const datasets = groupCards.map(card => {
+                    const color = card.color || '#6366f1';
+                    return {
+                        type: card.chartType,
+                        label: card.label,
+                        data: filteredChartData.map(d => d[card.key] !== undefined && d[card.key] !== null ? d[card.key] : null),
+                        borderColor: color,
+                        backgroundColor: card.chartType === 'bar' ? color + '66' : color + '1a',
+                        borderWidth: 2,
+                        tension: 0.3,
+                        spanGaps: true
+                    };
+                });
+                
+                window[chartId] = new Chart(ctx, {
+                    type: mainType,
+                    data: {
+                        labels: labels,
+                        datasets: datasets
+                    },
+                    options: {
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        plugins: {
+                            legend: { 
+                                display: groupCards.length > 1,
+                                position: 'top',
+                                labels: { color: textColor, font: { size: 9 } }
+                            }
                         },
-                        options: {
-                            responsive: true,
-                            maintainAspectRatio: false,
-                            plugins: {
-                                legend: { 
-                                    display: groupCards.length > 1,
-                                    position: 'top',
-                                    labels: { color: textColor, font: { size: 9 } }
-                                }
+                        scales: {
+                            x: {
+                                grid: { color: gridColor },
+                                ticks: { color: textColor, font: { size: 9 } }
                             },
-                            scales: {
-                                x: {
-                                    grid: { color: gridColor },
-                                    ticks: { color: textColor, font: { size: 9 } }
-                                },
-                                y: {
-                                    grid: { color: gridColor },
-                                    ticks: { color: textColor, font: { size: 9 } },
-                                    beginAtZero: hasBar
-                                }
+                            y: {
+                                grid: { color: gridColor },
+                                ticks: { color: textColor, font: { size: 9 } },
+                                beginAtZero: hasBar
                             }
                         }
-                    });
+                    }
                 });
+            };
+
+            const renderAllCharts = () => {
+                canvases.forEach(canvasObj => renderSingleChart(canvasObj));
             };
 
             if (typeof Chart === 'undefined') {
@@ -785,6 +975,7 @@ class OmniLoggerPlugin extends obsidian.Plugin {
 
     async onload() {
         await this.loadSettings();
+        await this.swallowGoogleCredentials();
         
         // Initialize default local-parser.js if missing
         const fs = require('fs');
@@ -2020,6 +2211,17 @@ class OmniLoggerPlugin extends obsidian.Plugin {
         return this.setSecret(secretId, '', value);
     }
 
+    async swallowGoogleCredentials() {
+        if (this.settings.googleClientJson) {
+            try {
+                await this.setSecret('omni-logger-google-credentials', 'googleClientJson', this.settings.googleClientJson);
+                console.log("[Omni-Logger] Successfully migrated googleClientJson to keychain");
+            } catch (e) {
+                console.error("[Omni-Logger] Failed to migrate googleClientJson to keychain:", e);
+            }
+        }
+    }
+
     getDailyNoteFile() {
         const activeFile = this.app.workspace.getActiveFile();
         if (activeFile && activeFile.path.startsWith('02_Journal/01_Daily/') && activeFile.name.endsWith('.md')) {
@@ -2626,17 +2828,18 @@ Ensure only valid JSON is output, and no debug or extra text is printed.`;
         }
 
         if (!clientId && conn.id === 'google-health') {
-            // Try parsing pasted credentials JSON from settings
-            if (this.settings.googleClientJson) {
+            // Try parsing pasted credentials JSON from settings/keychain
+            const googleCreds = await this.getSecret('omni-logger-google-credentials', 'googleClientJson');
+            if (googleCreds) {
                 try {
-                    const credsData = JSON.parse(this.settings.googleClientJson);
+                    const credsData = JSON.parse(googleCreds);
                     const web = credsData.installed || credsData.web || credsData;
                     if (web && web.client_id) {
                         clientId = web.client_id;
                         clientSecret = web.client_secret;
                     }
                 } catch(e) {
-                    console.error("Failed to parse googleClientJson settings:", e);
+                    console.error("Failed to parse omni-logger-google-credentials from keychain:", e);
                 }
             }
 
@@ -2679,6 +2882,29 @@ Ensure only valid JSON is output, and no debug or extra text is printed.`;
                 this.tempOAuthServer.close();
             } catch(e) {}
         }
+
+        // Close schedule-assistant's active server if running to prevent port 8092 collisions
+        const schedulePlugin = this.app.plugins.getPlugin('schedule-assistant-focus-timer');
+        if (schedulePlugin && schedulePlugin.tempOAuthServer) {
+            try {
+                schedulePlugin.tempOAuthServer.close();
+                schedulePlugin.tempOAuthServer = null;
+                console.log("[Omni-Logger] Closed Schedule Assistant's running OAuth server to free port 8092.");
+            } catch(e) {
+                console.warn("[Omni-Logger] Failed to close Schedule Assistant's running OAuth server:", e);
+            }
+        }
+
+        // Set a 5-minute timeout to close the server if authorization is abandoned
+        const closeTimeout = setTimeout(() => {
+            if (this.tempOAuthServer) {
+                try {
+                    this.tempOAuthServer.close();
+                    this.tempOAuthServer = null;
+                    console.log("[Omni-Logger] OAuth temporary server closed due to 5-minute timeout.");
+                } catch(e) {}
+            }
+        }, 5 * 60 * 1000);
 
         this.tempOAuthServer = http.createServer(async (req, res) => {
             const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
@@ -2750,6 +2976,7 @@ Ensure only valid JSON is output, and no debug or extra text is printed.`;
                     res.end("Authentication failed: " + err.message);
                     new obsidian.Notice(`Authorization failed for "${conn.name}": ` + err.message);
                 } finally {
+                    clearTimeout(closeTimeout);
                     setTimeout(() => {
                         if (this.tempOAuthServer) {
                             this.tempOAuthServer.close();
@@ -2760,6 +2987,7 @@ Ensure only valid JSON is output, and no debug or extra text is printed.`;
             } else {
                 res.writeHead(400, { 'Content-Type': 'text/plain' });
                 res.end("Authorization code missing.");
+                clearTimeout(closeTimeout);
                 setTimeout(() => {
                     if (this.tempOAuthServer) {
                         this.tempOAuthServer.close();
@@ -4333,12 +4561,13 @@ class OmniLoggerSettingTab extends obsidian.PluginSettingTab {
                 .setName('OAuth Client JSON config')
                 .setDesc('Paste the content of your downloaded Google OAuth Client Secrets JSON.')
                 .addTextArea(text => {
-                    text.setPlaceholder('{"web":{"client_id":"..."}}')
-                        .setValue(this.plugin.settings.googleClientJson || '')
-                        .onChange(async (value) => {
-                            this.plugin.settings.googleClientJson = value;
-                            await this.plugin.saveSettings();
-                        });
+                    text.setPlaceholder('{"web":{"client_id":"..."}}');
+                    this.plugin.getSecret('omni-logger-google-credentials', 'googleClientJson').then(val => {
+                        text.setValue(val || '');
+                    });
+                    text.onChange(async (value) => {
+                        await this.plugin.setSecret('omni-logger-google-credentials', 'googleClientJson', value.trim());
+                    });
                     text.inputEl.rows = 4;
                     text.inputEl.style.width = '100%';
                 });
@@ -4757,6 +4986,10 @@ class OmniLoggerSettingTab extends obsidian.PluginSettingTab {
                         fs.mkdirSync(dirPath, { recursive: true });
                     }
                     fs.writeFileSync(metadataPath, JSON.stringify(m, null, 2), 'utf8');
+                    if (t.mode !== 'ble' && t.prompt) {
+                        const promptPath = `${dirPath}/system_prompt.txt`;
+                        fs.writeFileSync(promptPath, t.prompt, 'utf8');
+                    }
                     await this.plugin.updateMetaBindButton(t);
                 } catch(e) {
                     console.error("Failed to sync template configuration file on the fly:", e);
@@ -5101,6 +5334,18 @@ class OmniLoggerSettingTab extends obsidian.PluginSettingTab {
                                 t.syncStyle = styleSelect.value;
                                 t.syncInterval = parseInt(intervalInput.value) || 60;
                             }
+                            const dirPath = `${this.app.vault.adapter.getBasePath()}/${this.plugin.settings.ingredientsFolder}/${cleanDirName}`;
+                            if (!fs.existsSync(dirPath)) {
+                                fs.mkdirSync(dirPath, { recursive: true });
+                            }
+                            if (t.prompt) {
+                                const promptPath = `${dirPath}/system_prompt.txt`;
+                                try {
+                                    fs.writeFileSync(promptPath, t.prompt, 'utf8');
+                                } catch (e) {
+                                    console.error("Failed to write system_prompt.txt:", e);
+                                }
+                            }
                             if (fs.existsSync(metadataPath)) {
                                 try {
                                     let m = JSON.parse(fs.readFileSync(metadataPath, 'utf8'));
@@ -5116,10 +5361,6 @@ class OmniLoggerSettingTab extends obsidian.PluginSettingTab {
                                 }
                             } else {
                                 try {
-                                    const dirPath = `${this.app.vault.adapter.getBasePath()}/${this.plugin.settings.ingredientsFolder}/${cleanDirName}`;
-                                    if (!fs.existsSync(dirPath)) {
-                                        fs.mkdirSync(dirPath, { recursive: true });
-                                    }
                                     const m = {
                                         id: t.id,
                                         name: t.name,
@@ -5285,6 +5526,22 @@ class OmniLoggerSettingTab extends obsidian.PluginSettingTab {
                     
                     tileCheckbox.onchange = async () => {
                         card.showTile = tileCheckbox.checked;
+                        await this.plugin.saveLocalParserCards(cards);
+                    };
+
+                    const wkndLabel = cardRow.createEl('label');
+                    wkndLabel.style.display = 'flex';
+                    wkndLabel.style.alignItems = 'center';
+                    wkndLabel.style.gap = '4px';
+                    wkndLabel.style.fontSize = '0.85em';
+                    wkndLabel.style.whiteSpace = 'nowrap';
+                    
+                    const wkndCheckbox = wkndLabel.createEl('input', { type: 'checkbox' });
+                    wkndCheckbox.checked = card.excludeWeekends === true;
+                    wkndLabel.appendText('Excl Wknd');
+                    
+                    wkndCheckbox.onchange = async () => {
+                        card.excludeWeekends = wkndCheckbox.checked;
                         await this.plugin.saveLocalParserCards(cards);
                     };
 
