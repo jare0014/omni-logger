@@ -10,12 +10,21 @@ Instead of writing custom scripts for every integration, Omni-Logger provides a 
 
 Omni-Logger operates across three decoupled layers:
 
-```
-[ Sources Layer ]                [ Ingestion & Parsing ]         [ Storage Adapter Layer ]
-- Git repositories              - Deterministic Parsers         - YAML Frontmatter
-- Google Health API (OAuth2)      (Bypass for Health/Vitals)    - Dataview Inline (key:: val)
-- Bluetooth BLE Beacons         - LLM Extraction (Ollama/Gemini)- Appended Daily Logs
-- Custom HTTP APIs (Wizard)       (For OCR & Custom APIs)
+```mermaid
+graph TD
+    BLE["Bluetooth BLE Devices"] --> Sources["Sources Layer (Ingestion Engine)"]
+    GHealth["Google Health API (OAuth2)"] --> Sources
+    GitLog["Local Git Commit Logs"] --> Sources
+    Clipboard["Clipboard Screenshots / OCR"] --> Sources
+    
+    Sources --> Parsing{"Ingestion & Parsing Layer"}
+    Parsing -->|Biometrics / Vitals| LocalParse["Deterministic JS Parser (0% Hallucination)"]
+    Parsing -->|Custom APIs / OCR| LLMParse["🤖 LLM Extraction (Gemini 3.1 Flash-Lite / Ollama)"]
+    
+    LocalParse --> Adapter["Storage Adapter Layer"]
+    LLMParse --> Adapter
+    
+    Adapter --> DailyNote["📝 Obsidian Daily Note (YAML & Dataview Inline Fields)"]
 ```
 
 1. **Sources Layer (Ingestion)**: Collects data from built-in or custom sources (APIs, BLE devices, local git folders, or clipboard screenshot OCR).
