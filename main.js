@@ -2011,8 +2011,9 @@ class OmniLoggerPlugin extends obsidian.Plugin {
                 try {
                     const child_process = require('child_process');
                     const env = Object.assign({}, process.env, { NOTEBOOKLM_AUTH_JSON: sessionJson });
+                    const notebooklmCmd = (kpPlugin && typeof kpPlugin.getNotebooklmCmd === 'function') ? kpPlugin.getNotebooklmCmd() : 'notebooklm';
                     const isOk = await new Promise((resolve) => {
-                        child_process.exec('notebooklm list --json', { env: env, timeout: 10000 }, (err, stdout, stderr) => {
+                        child_process.exec(`"${notebooklmCmd}" list --json`, { env: env, timeout: 10000 }, (err, stdout, stderr) => {
                             const output = (stdout || '') + (stderr || '');
                             if (err || output.toLowerCase().includes('not logged in') || output.toLowerCase().includes('expired')) {
                                 resolve(false);
