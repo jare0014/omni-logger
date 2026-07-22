@@ -3532,6 +3532,7 @@ Ensure only valid JSON is output, and no debug or extra text is printed.`;
         }
         
         const targetPluginIds = [
+            'always-on-memory-agent',
             'schedule-assistant-focus-timer',
             'omni-logger',
             'google-keep-sync',
