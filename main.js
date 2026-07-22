@@ -4145,12 +4145,22 @@ class OmniLoggerSettingTab extends obsidian.PluginSettingTab {
                 .setName('Model')
                 .setDesc('Gemini model to use.')
                 .addDropdown(dropdown => dropdown
+                    .addOption('gemini-3.1-flash-lite', 'Gemini 3.1 Flash-Lite (Fast & Cost-Effective)')
                     .addOption('gemini-2.5-flash', 'Gemini 2.5 Flash')
                     .addOption('gemini-2.5-pro', 'Gemini 2.5 Pro')
-                    .setValue(this.plugin.settings.templateModel || 'gemini-2.5-flash')
+                    .setValue(this.plugin.settings.templateModel || 'gemini-3.1-flash-lite')
                     .onChange(async (value) => {
                         this.plugin.settings.templateModel = value;
                         await this.plugin.saveSettings();
+                    }))
+                .addText(text => text
+                    .setPlaceholder('Or enter custom model name...')
+                    .setValue(this.plugin.settings.templateModel || '')
+                    .onChange(async (value) => {
+                        if (value.trim()) {
+                            this.plugin.settings.templateModel = value.trim();
+                            await this.plugin.saveSettings();
+                        }
                     }));
         } else if (this.plugin.settings.templateProvider === 'openai') {
             let openaiSecretId = this.plugin.settings.openaiApiKeyId || 'omni-logger-openai-api-key';
