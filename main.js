@@ -4141,27 +4141,46 @@ class OmniLoggerSettingTab extends obsidian.PluginSettingTab {
                 }
             });
             
+            const templateGeminiOptions = ['gemini-3.5-flash-lite', 'gemini-3.5-flash', 'gemini-3.1-flash-lite', 'gemini-2.5-flash', 'gemini-2.5-pro'];
+            let templateModelVal = this.plugin.settings.templateModel || 'gemini-3.5-flash-lite';
+            let isTemplateCustom = (!templateGeminiOptions.includes(templateModelVal) && templateModelVal !== '') || templateModelVal === 'custom';
+
             new obsidian.Setting(containerEl)
                 .setName('Model')
-                .setDesc('Gemini model to use.')
-                .addDropdown(dropdown => dropdown
-                    .addOption('gemini-3.1-flash-lite', 'Gemini 3.1 Flash-Lite (Fast & Cost-Effective)')
-                    .addOption('gemini-2.5-flash', 'Gemini 2.5 Flash')
-                    .addOption('gemini-2.5-pro', 'Gemini 2.5 Pro')
-                    .setValue(this.plugin.settings.templateModel || 'gemini-3.1-flash-lite')
-                    .onChange(async (value) => {
-                        this.plugin.settings.templateModel = value;
-                        await this.plugin.saveSettings();
-                    }))
-                .addText(text => text
-                    .setPlaceholder('Or enter custom model name...')
-                    .setValue(this.plugin.settings.templateModel || '')
-                    .onChange(async (value) => {
-                        if (value.trim()) {
+                .setDesc('Gemini model to use for templates.')
+                .addDropdown(dropdown => {
+                    dropdown
+                        .addOption('gemini-3.5-flash-lite', 'Gemini 3.5 Flash-Lite (Fast & Ultra-Light)')
+                        .addOption('gemini-3.5-flash', 'Gemini 3.5 Flash')
+                        .addOption('gemini-3.1-flash-lite', 'Gemini 3.1 Flash-Lite')
+                        .addOption('gemini-2.5-flash', 'Gemini 2.5 Flash')
+                        .addOption('gemini-2.5-pro', 'Gemini 2.5 Pro')
+                        .addOption('custom', 'Custom...');
+                    dropdown.setValue(isTemplateCustom ? 'custom' : templateModelVal)
+                        .onChange(async (value) => {
+                            if (value === 'custom') {
+                                this.plugin.settings.templateModel = this.plugin.settings.customTemplateModel || 'custom';
+                            } else {
+                                this.plugin.settings.templateModel = value;
+                            }
+                            await this.plugin.saveSettings();
+                            this.display();
+                        });
+                });
+
+            if (isTemplateCustom || this.plugin.settings.templateModel === 'custom') {
+                new obsidian.Setting(containerEl)
+                    .setName('Custom Model Name')
+                    .setDesc('Enter custom model identifier (e.g. qwen2.5:14b).')
+                    .addText(text => text
+                        .setPlaceholder('Enter model name...')
+                        .setValue(this.plugin.settings.customTemplateModel || (isTemplateCustom ? templateModelVal : ''))
+                        .onChange(async (value) => {
+                            this.plugin.settings.customTemplateModel = value.trim();
                             this.plugin.settings.templateModel = value.trim();
                             await this.plugin.saveSettings();
-                        }
-                    }));
+                        }));
+            }
         } else if (this.plugin.settings.templateProvider === 'openai') {
             let openaiSecretId = this.plugin.settings.openaiApiKeyId || 'omni-logger-openai-api-key';
             const openaiSetting = new obsidian.Setting(containerEl)
@@ -4267,7 +4286,7 @@ class OmniLoggerSettingTab extends obsidian.PluginSettingTab {
                     if (value === 'ollama' && !this.plugin.settings.executorModel.includes(':')) {
                         this.plugin.settings.executorModel = 'qwen2.5:7b';
                     } else if (value === 'gemini' && this.plugin.settings.executorModel.includes(':')) {
-                        this.plugin.settings.executorModel = 'gemini-2.5-flash';
+                        this.plugin.settings.executorModel = 'gemini-3.5-flash-lite';
                     } else if (value === 'openai') {
                         this.plugin.settings.executorModel = 'gpt-4o-mini';
                     }
@@ -4276,17 +4295,46 @@ class OmniLoggerSettingTab extends obsidian.PluginSettingTab {
                 }));
 
         if (this.plugin.settings.executorProvider === 'gemini') {
+            const executorGeminiOptions = ['gemini-3.5-flash-lite', 'gemini-3.5-flash', 'gemini-3.1-flash-lite', 'gemini-2.5-flash', 'gemini-2.5-pro'];
+            let executorModelVal = this.plugin.settings.executorModel || 'gemini-3.5-flash-lite';
+            let isExecutorCustom = (!executorGeminiOptions.includes(executorModelVal) && executorModelVal !== '') || executorModelVal === 'custom';
+
             new obsidian.Setting(containerEl)
                 .setName('Execution Model')
                 .setDesc('Gemini model to use for execution.')
-                .addDropdown(dropdown => dropdown
-                    .addOption('gemini-2.5-flash', 'Gemini 2.5 Flash')
-                    .addOption('gemini-2.5-pro', 'Gemini 2.5 Pro')
-                    .setValue(this.plugin.settings.executorModel || 'gemini-2.5-flash')
-                    .onChange(async (value) => {
-                        this.plugin.settings.executorModel = value;
-                        await this.plugin.saveSettings();
-                    }));
+                .addDropdown(dropdown => {
+                    dropdown
+                        .addOption('gemini-3.5-flash-lite', 'Gemini 3.5 Flash-Lite (Fast & Ultra-Light)')
+                        .addOption('gemini-3.5-flash', 'Gemini 3.5 Flash')
+                        .addOption('gemini-3.1-flash-lite', 'Gemini 3.1 Flash-Lite')
+                        .addOption('gemini-2.5-flash', 'Gemini 2.5 Flash')
+                        .addOption('gemini-2.5-pro', 'Gemini 2.5 Pro')
+                        .addOption('custom', 'Custom...');
+                    dropdown.setValue(isExecutorCustom ? 'custom' : executorModelVal)
+                        .onChange(async (value) => {
+                            if (value === 'custom') {
+                                this.plugin.settings.executorModel = this.plugin.settings.customExecutorModel || 'custom';
+                            } else {
+                                this.plugin.settings.executorModel = value;
+                            }
+                            await this.plugin.saveSettings();
+                            this.display();
+                        });
+                });
+
+            if (isExecutorCustom || this.plugin.settings.executorModel === 'custom') {
+                new obsidian.Setting(containerEl)
+                    .setName('Custom Execution Model Name')
+                    .setDesc('Enter custom model identifier (e.g. qwen2.5:14b).')
+                    .addText(text => text
+                        .setPlaceholder('Enter model name...')
+                        .setValue(this.plugin.settings.customExecutorModel || (isExecutorCustom ? executorModelVal : ''))
+                        .onChange(async (value) => {
+                            this.plugin.settings.customExecutorModel = value.trim();
+                            this.plugin.settings.executorModel = value.trim();
+                            await this.plugin.saveSettings();
+                        }));
+            }
         } else if (this.plugin.settings.executorProvider === 'openai') {
             new obsidian.Setting(containerEl)
                 .setName('Execution Model')
@@ -4728,10 +4776,31 @@ class OmniLoggerSettingTab extends obsidian.PluginSettingTab {
                     await this.plugin.saveSettings();
                 };
 
-                const keyInput = row.createEl('input', { type: 'text', placeholder: 'Target Key (e.g. HRV)', style: 'flex:1; min-width:120px;' });
+                const keyInput = row.createEl('input', { type: 'text', placeholder: 'Target Key (e.g. HRV)', style: 'flex:1; min-width:110px;' });
                 keyInput.value = syncConfig[k].key || '';
                 keyInput.onChange = async () => {
                     syncConfig[k].key = keyInput.value.trim();
+                    await this.plugin.saveSettings();
+                };
+
+                // Per-Scope Sync Style (Manual vs Automatic) & Interval
+                const scopeStyleSelect = row.createEl('select');
+                scopeStyleSelect.createEl('option', { value: 'manual', text: 'Manual' });
+                scopeStyleSelect.createEl('option', { value: 'automatic', text: 'Auto Sync' });
+                scopeStyleSelect.value = syncConfig[k].syncStyle || 'manual';
+
+                const scopeIntervalInput = row.createEl('input', { type: 'number', placeholder: 'Mins', style: 'width:65px;' });
+                scopeIntervalInput.value = String(syncConfig[k].syncInterval || 60);
+                scopeIntervalInput.style.display = (scopeStyleSelect.value === 'automatic') ? '' : 'none';
+
+                scopeStyleSelect.onChange = async () => {
+                    syncConfig[k].syncStyle = scopeStyleSelect.value;
+                    scopeIntervalInput.style.display = (scopeStyleSelect.value === 'automatic') ? '' : 'none';
+                    await this.plugin.saveSettings();
+                };
+
+                scopeIntervalInput.onChange = async () => {
+                    syncConfig[k].syncInterval = parseInt(scopeIntervalInput.value) || 60;
                     await this.plugin.saveSettings();
                 };
             });
