@@ -4088,19 +4088,10 @@ class OmniLoggerSettingTab extends obsidian.PluginSettingTab {
                     text.inputEl.type = 'password';
                     text.setPlaceholder('Enter Gemini API Key');
                     this.plugin.getSecret(geminiSecretId, 'geminiApiKey').then(secret => {
-                        if (secret && secret.length > 10) {
-                            text.setValue(secret.substring(0, 8) + '...' + secret.substring(secret.length - 4));
-                        }
+                        text.setValue(secret || '');
                     });
                     text.onChange(async (value) => {
-                        if (value && value.length > 20) {
-                            await this.plugin.setSecret(geminiSecretId, 'geminiApiKey', value);
-                            let displayStr = value.substring(0, 8) + '...' + value.substring(value.length - 4);
-                            text.setValue(displayStr);
-                            new obsidian.Notice("Gemini API Key saved!");
-                        } else if (value.trim() === '') {
-                            await this.plugin.setSecret(geminiSecretId, 'geminiApiKey', '');
-                        }
+                        await this.plugin.setSecret(geminiSecretId, 'geminiApiKey', value.trim());
                     });
                 })
                 .addButton(btn => btn
