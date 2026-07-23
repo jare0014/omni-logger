@@ -7031,20 +7031,23 @@ class OmniFoodLoggerModal extends obsidian.Modal {
             this.newCalories = 0;
             this.newCaffeine = 0;
             this.newAlcohol = 0;
+            this.newWaterFlOz = 0;
+            this.newWaterMl = 0;
 
             new obsidian.Setting(mainContainer)
                 .setName('Unique ID')
-                .setDesc('E.g. "espresso_double" or "peanut_butter"')
+                .setDesc('E.g. "espresso_double" or "water_12oz"')
                 .addText(text => text.onChange(val => this.newId = val.trim().toLowerCase().replace(/\s+/g, '_')));
                 
             new obsidian.Setting(mainContainer)
                 .setName('Display Name')
-                .setDesc('E.g. "Double Espresso" or "Organic Peanut Butter"')
+                .setDesc('E.g. "Double Espresso" or "Water (12 oz Cup)"')
                 .addText(text => text.onChange(val => this.newName = val.trim()));
                 
             new obsidian.Setting(mainContainer)
                 .setName('Category')
                 .addDropdown(dropdown => dropdown
+                    .addOption('hydration', 'Hydration / Water')
                     .addOption('caffeine', 'Caffeine')
                     .addOption('alcohol', 'Alcohol')
                     .addOption('nutrition', 'General Nutrition')
@@ -7054,9 +7057,17 @@ class OmniFoodLoggerModal extends obsidian.Modal {
                 
             new obsidian.Setting(mainContainer)
                 .setName('Unit Name')
-                .setDesc('E.g. "shot", "can", "serving"')
+                .setDesc('E.g. "cup (12 oz / 355 ml)", "shot", "can"')
                 .addText(text => text.setValue(this.newUnit).onChange(val => this.newUnit = val.trim()));
                 
+            new obsidian.Setting(mainContainer)
+                .setName('Water / Volume (fl oz per serving)')
+                .setDesc('Required for Hydration items (e.g. 12 for 12 oz cup, 16.9 for bottle)')
+                .addText(text => text.setValue('0').onChange(val => {
+                    this.newWaterFlOz = parseFloat(val) || 0;
+                    this.newWaterMl = Math.round(this.newWaterFlOz * 29.5735 * 10) / 10;
+                }));
+
             new obsidian.Setting(mainContainer)
                 .setName('Protein (g per serving)')
                 .addText(text => text.setValue('0').onChange(val => this.newProtein = parseFloat(val) || 0));
@@ -7097,8 +7108,12 @@ class OmniFoodLoggerModal extends obsidian.Modal {
                 
                 const nutrients = {};
                 let healthType = "nutrition";
+                let waterMl = undefined;
                 
-                if (this.newCategory === "caffeine" && this.newCaffeine > 0) {
+                if (this.newCategory === "hydration") {
+                    healthType = "hydration";
+                    waterMl = this.newWaterFlOz > 0 ? Math.round(this.newWaterFlOz * 29.5735 * 10) / 10 : (this.newWaterMl || 250.0);
+                } else if (this.newCategory === "caffeine" && this.newCaffeine > 0) {
                     nutrients["caffeine"] = this.newCaffeine / 1000.0; // mg to g
                 } else if (this.newCategory === "alcohol" && this.newAlcohol > 0) {
                     nutrients["alcohol"] = this.newAlcohol;
@@ -7118,6 +7133,7 @@ class OmniFoodLoggerModal extends obsidian.Modal {
                     alcohol_g: this.newAlcohol > 0 ? this.newAlcohol : undefined,
                     protein_g: this.newProtein > 0 ? this.newProtein : undefined,
                     calories: this.newCalories > 0 ? this.newCalories : undefined,
+                    water_ml: waterMl,
                     health_connect_type: healthType,
                     nutrients: nutrients
                 };
@@ -7152,7 +7168,7 @@ class OmniFoodLoggerModal extends obsidian.Modal {
                 const info = row.createDiv();
                 const title = info.createEl('div', { text: `${item.name} (${item.unit})`, style: 'font-weight:bold;' });
                 const detail = info.createEl('div', { 
-                    text: `ID: ${item.id} | Category: ${item.category} | ${item.calories ? item.calories + ' kcal ' : ''}${item.protein_g ? item.protein_g + 'g prot ' : ''}${item.caffeine_mg ? item.caffeine_mg + 'mg caff ' : ''}${item.alcohol_g ? item.alcohol_g + 'g alc ' : ''}`, 
+                    text: `ID: ${item.id} | Category: ${item.category} | ${item.water_ml ? Math.round(item.water_ml * 0.033814 * 10) / 10 + ' fl oz (' + item.water_ml + ' ml) ' : ''}${item.calories ? item.calories + ' kcal ' : ''}${item.protein_g ? item.protein_g + 'g prot ' : ''}${item.caffeine_mg ? item.caffeine_mg + 'mg caff ' : ''}${item.alcohol_g ? item.alcohol_g + 'g alc ' : ''}`, 
                     style: 'font-size:0.85em; color:var(--text-muted);' 
                 });
 
@@ -7191,6 +7207,8 @@ class OmniFoodLoggerModal extends obsidian.Modal {
             this.newCalories = item.calories || 0;
             this.newCaffeine = item.caffeine_mg || 0;
             this.newAlcohol = item.alcohol_g || 0;
+            this.newWaterMl = item.water_ml || 0;
+            this.newWaterFlOz = item.water_ml ? Math.round(item.water_ml * 0.033814 * 10) / 10 : 0;
 
             new obsidian.Setting(mainContainer)
                 .setName('Unique ID')
@@ -7204,6 +7222,7 @@ class OmniFoodLoggerModal extends obsidian.Modal {
             new obsidian.Setting(mainContainer)
                 .setName('Category')
                 .addDropdown(dropdown => dropdown
+                    .addOption('hydration', 'Hydration / Water')
                     .addOption('caffeine', 'Caffeine')
                     .addOption('alcohol', 'Alcohol')
                     .addOption('nutrition', 'General Nutrition')
@@ -7215,6 +7234,14 @@ class OmniFoodLoggerModal extends obsidian.Modal {
                 .setName('Unit Name')
                 .addText(text => text.setValue(this.newUnit).onChange(val => this.newUnit = val.trim()));
                 
+            new obsidian.Setting(mainContainer)
+                .setName('Water / Volume (fl oz per serving)')
+                .setDesc('Required for Hydration items (e.g. 12 for 12 oz cup, 16.9 for bottle)')
+                .addText(text => text.setValue(String(this.newWaterFlOz)).onChange(val => {
+                    this.newWaterFlOz = parseFloat(val) || 0;
+                    this.newWaterMl = Math.round(this.newWaterFlOz * 29.5735 * 10) / 10;
+                }));
+
             new obsidian.Setting(mainContainer)
                 .setName('Protein (g per serving)')
                 .addText(text => text.setValue(String(this.newProtein)).onChange(val => this.newProtein = parseFloat(val) || 0));
@@ -7256,8 +7283,12 @@ class OmniFoodLoggerModal extends obsidian.Modal {
 
                 const nutrients = {};
                 let healthType = "nutrition";
+                let waterMl = undefined;
                 
-                if (this.newCategory === "caffeine" && this.newCaffeine > 0) {
+                if (this.newCategory === "hydration") {
+                    healthType = "hydration";
+                    waterMl = this.newWaterFlOz > 0 ? Math.round(this.newWaterFlOz * 29.5735 * 10) / 10 : (this.newWaterMl || 250.0);
+                } else if (this.newCategory === "caffeine" && this.newCaffeine > 0) {
                     nutrients["caffeine"] = this.newCaffeine / 1000.0; // mg to g
                 } else if (this.newCategory === "alcohol" && this.newAlcohol > 0) {
                     nutrients["alcohol"] = this.newAlcohol;
@@ -7277,6 +7308,7 @@ class OmniFoodLoggerModal extends obsidian.Modal {
                     alcohol_g: this.newAlcohol > 0 ? this.newAlcohol : undefined,
                     protein_g: this.newProtein > 0 ? this.newProtein : undefined,
                     calories: this.newCalories > 0 ? this.newCalories : undefined,
+                    water_ml: waterMl,
                     health_connect_type: healthType,
                     nutrients: nutrients
                 };
