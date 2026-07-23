@@ -215,15 +215,15 @@ class OCRLogger:
         try:
             self.api_key = get_gemini_key()
         except Exception as e:
+            sys.stderr.write(f"Configuration Error: {e}\n")
             if self.headless:
-                print(f"Configuration Error: {e}")
                 sys.exit(1)
-            # Show popup if not headless
             self.root = tk.Tk()
+            self.root.attributes('-topmost', True)
             self.root.withdraw()
             messagebox.showerror("Configuration Error", str(e))
             self.root.destroy()
-            return
+            sys.exit(1)
             
         if self.headless:
             # Headless execution
@@ -232,9 +232,10 @@ class OCRLogger:
 
         # Hide root window
         self.root = tk.Tk()
+        self.root.attributes('-topmost', True)
         self.root.withdraw()
         
-        # Check clipboard
+        # Check clipboard automatically
         from PIL import ImageGrab, Image
         import io
         
@@ -244,43 +245,41 @@ class OCRLogger:
         try:
             clipboard_data = ImageGrab.grabclipboard()
             if isinstance(clipboard_data, Image.Image):
-                use_clipboard = messagebox.askyesno(
-                    "Clipboard Image Found", 
-                    "An image was found in your clipboard. Do you want to process it?"
-                )
-                if use_clipboard:
-                    buf = io.BytesIO()
-                    clipboard_data.save(buf, format="PNG")
-                    img_bytes = buf.getvalue()
+                buf = io.BytesIO()
+                clipboard_data.save(buf, format="PNG")
+                img_bytes = buf.getvalue()
+                print("Found image in clipboard, processing automatically...")
             elif isinstance(clipboard_data, list) and clipboard_data:
                 first_file = clipboard_data[0]
                 if os.path.exists(first_file) and first_file.lower().endswith(('.png', '.jpg', '.jpeg', '.webp', '.bmp')):
-                    use_clipboard = messagebox.askyesno(
-                        "Clipboard Image File Found", 
-                        f"Copied image file '{os.path.basename(first_file)}' found in clipboard. Do you want to process it?"
-                    )
-                    if use_clipboard:
-                        with open(first_file, "rb") as f:
-                            img_bytes = f.read()
-                        if first_file.lower().endswith(('.jpg', '.jpeg')):
-                            mime_type = "image/jpeg"
-                        elif first_file.lower().endswith('.webp'):
-                            mime_type = "image/webp"
-                        elif first_file.lower().endswith('.bmp'):
-                            mime_type = "image/bmp"
+                    with open(first_file, "rb") as f:
+                        img_bytes = f.read()
+                    if first_file.lower().endswith(('.jpg', '.jpeg')):
+                        mime_type = "image/jpeg"
+                    elif first_file.lower().endswith('.webp'):
+                        mime_type = "image/webp"
+                    elif first_file.lower().endswith('.bmp'):
+                        mime_type = "image/bmp"
+                    print(f"Found image file {os.path.basename(first_file)} in clipboard, processing automatically...")
         except Exception as e:
             print(f"Error checking clipboard: {e}")
 
         img_path = None
         if img_bytes is None:
+            self.root.deiconify()
+            self.root.lift()
+            self.root.focus_force()
             img_path = filedialog.askopenfilename(
+                parent=self.root,
                 title=f"Select screenshot for {self.template_name}",
                 filetypes=[("Image files", "*.png *.jpg *.jpeg *.webp *.bmp")]
             )
+            self.root.withdraw()
             
             if not img_path:
+                sys.stderr.write(f"No image found in clipboard or selected for {self.template_name}.\n")
                 self.root.destroy()
-                return
+                sys.exit(1)
             
         # Show loading window
         self.loading_win = tk.Toplevel(self.root)
@@ -288,6 +287,7 @@ class OCRLogger:
         self.loading_win.geometry("320x130")
         self.loading_win.configure(bg="#1e1e2e")
         self.loading_win.resizable(False, False)
+        self.loading_win.attributes('-topmost', True)
         self.loading_win.update_idletasks()
 
         width = self.loading_win.winfo_width()
@@ -330,7 +330,7 @@ class OCRLogger:
                 elif img_path.lower().endswith(".bmp"):
                     mime_type = "image/bmp"
             
-            model_names = ['gemini-3.5-flash', 'gemini-3.1-flash-lite', 'gemini-2.5-flash', 'gemini-2.0-flash']
+            model_names = ['gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-1.5-flash']
             text_response = None
             last_err = None
             
@@ -370,7 +370,9 @@ class OCRLogger:
             if not text_response:
                 raise last_err
             
-            data = json.loads(text_response)
+            clean_text = re.sub(r"^```(?:json)?\s*", "", text_response, flags=re.IGNORECASE)
+            clean_text = re.sub(r"\s*```$", "", clean_text).strip()
+            data = json.loads(clean_text)
             
             # Post-processing specifically for Lumosity nested scores validation
             if self.meta.get("id") == "lumosity" or self.template_name.lower() == "lumosity":
@@ -406,11 +408,12 @@ class OCRLogger:
             else:
                 self.after_main(lambda: messagebox.showinfo("Success", f"Successfully extracted and saved {self.template_name} data to note!"))
         except Exception as e:
+            sys.stderr.write(f"Failed to extract {self.template_name} data: {e}\n")
             if self.headless:
-                print(f"Failed to extract {self.template_name} data: {e}")
                 sys.exit(1)
             else:
                 self.after_main(lambda: messagebox.showerror("OCR Error", f"Failed to extract {self.template_name} data: {e}"))
+                sys.exit(1)
         finally:
             if not self.headless:
                 self.after_main(self.root.destroy)
