@@ -301,38 +301,13 @@ class OCRLogger:
                 self.root.destroy()
                 sys.exit(1)
             
-        # Show loading window
-        self.loading_win = tk.Toplevel(self.root)
-        self.loading_win.title("Processing OCR")
-        self.loading_win.geometry("320x130")
-        self.loading_win.configure(bg="#1e1e2e")
-        self.loading_win.resizable(False, False)
-        self.loading_win.attributes('-topmost', True)
-        self.loading_win.update_idletasks()
-
-        width = self.loading_win.winfo_width()
-        height = self.loading_win.winfo_height()
-        screen_width = self.loading_win.winfo_screenwidth()
-        screen_height = self.loading_win.winfo_screenheight()
-
-        x = (screen_width // 2) - (width // 2)
-        y = (screen_height // 2) - (height // 2)
-        self.loading_win.geometry(f'{width}x{height}+{x}+{y}')
-        
-        lbl = tk.Label(
-            self.loading_win, 
-            text=f"Extracting {self.template_name} data...\nPlease wait while Gemini analyzes screenshot.", 
-            fg="#cdd6f4", 
-            bg="#1e1e2e", 
-            font=("Helvetica", 11, "bold"),
-            pady=20
-        )
-        lbl.pack(expand=True)
-        self.loading_win.update()
-        
-        # Process in thread
-        threading.Thread(target=self.process_image, args=(img_path, img_bytes, mime_type), daemon=True).start()
-        self.root.mainloop()
+        # Process image synchronously
+        self.process_image(img_path, img_bytes, mime_type)
+        if hasattr(self, 'root') and self.root:
+            try:
+                self.root.destroy()
+            except Exception:
+                pass
         
     def process_image(self, img_path, img_bytes=None, mime_type="image/png"):
         try:
@@ -421,22 +396,12 @@ class OCRLogger:
             with open(self.file_path, "w", encoding="utf-8") as f:
                 f.write(updated_content)
                 
-            if self.headless:
-                print(f"Successfully extracted and saved {self.template_name} data to note!")
-                print(json.dumps(data))
-                sys.exit(0)
-            else:
-                self.after_main(lambda: messagebox.showinfo("Success", f"Successfully extracted and saved {self.template_name} data to note!"))
+            print(f"Successfully extracted and saved {self.template_name} data to note!")
+            print(json.dumps(data))
+            sys.exit(0)
         except Exception as e:
             sys.stderr.write(f"Failed to extract {self.template_name} data: {e}\n")
-            if self.headless:
-                sys.exit(1)
-            else:
-                self.after_main(lambda: messagebox.showerror("OCR Error", f"Failed to extract {self.template_name} data: {e}"))
-                sys.exit(1)
-        finally:
-            if not self.headless:
-                self.after_main(self.root.destroy)
+            sys.exit(1)
             
     def after_main(self, fn):
         self.root.after(0, fn)
