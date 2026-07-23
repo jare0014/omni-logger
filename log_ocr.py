@@ -325,43 +325,40 @@ class OCRLogger:
                 elif img_path.lower().endswith(".bmp"):
                     mime_type = "image/bmp"
             
-            # Load user model preference from plugin data.json
-            plugin_dir = os.path.dirname(os.path.abspath(__file__))
-            data_json_path = os.path.join(plugin_dir, "data.json")
-            user_model = None
-            if os.path.exists(data_json_path):
-                try:
-                    with open(data_json_path, "r", encoding="utf-8") as f:
-                        dj = json.load(f)
-                    user_model = dj.get("executorModel") or dj.get("templateModel") or dj.get("customExecutorModel") or dj.get("customTemplateModel")
-                except Exception:
-                    pass
+            # Query ListModels from Google API to get active models supported by key
+            available_models = []
+            try:
+                list_url = f"https://generativelanguage.googleapis.com/v1beta/models?key={self.api_key}"
+                res = requests.get(list_url, timeout=10)
+                if res.status_code == 200:
+                    for m in res.json().get("models", []):
+                        name = m.get("name", "").replace("models/", "")
+                        methods = m.get("supportedGenerationMethods", [])
+                        if "generateContent" in methods:
+                            available_models.append(name)
+            except Exception as e:
+                print(f"ListModels query warning: {e}")
 
-            raw_candidates = []
-            if user_model and user_model.strip():
-                raw_candidates.append(user_model.strip())
-            
-            raw_candidates.extend([
-                'gemini-2.5-flash-lite',
-                'gemini-2.5-flash',
-                'gemini-2.0-flash',
-                'gemini-1.5-flash-8b',
-                'gemini-1.5-pro'
-            ])
-            
+            if not available_models:
+                available_models = [
+                    'gemini-2.5-flash',
+                    'gemini-2.0-flash',
+                    'gemini-1.5-flash-latest',
+                    'gemini-1.5-flash',
+                    'gemini-1.5-pro-latest'
+                ]
+
             model_names = []
-            for m in raw_candidates:
-                mapped = m
-                if m.startswith("gemini-3.5") or m.startswith("gemini-3.1"):
-                    if "lite" in m.lower():
-                        mapped = "gemini-2.5-flash-lite"
-                    else:
-                        mapped = "gemini-2.5-flash"
-                if mapped not in model_names:
-                    model_names.append(mapped)
+            for m in available_models:
+                if 'flash' in m.lower() or 'lite' in m.lower():
+                    if m not in model_names:
+                        model_names.append(m)
+            for m in available_models:
+                if m not in model_names:
+                    model_names.append(m)
             
             text_response = None
-            last_err = None
+            errors_log = []
             
             for model_name in model_names:
                 url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={self.api_key}"
@@ -392,12 +389,12 @@ class OCRLogger:
                         text_response = res_data["candidates"][0]["content"]["parts"][0]["text"].strip()
                         break
                     else:
-                        last_err = RuntimeError(f"Gemini API model {model_name} failed with status {res.status_code}: {res.text}")
+                        errors_log.append(f"{model_name} (status {res.status_code}): {res.text[:100]}")
                 except Exception as e:
-                    last_err = e
+                    errors_log.append(f"{model_name}: {e}")
             
             if not text_response:
-                raise last_err
+                raise RuntimeError("All available Gemini models failed: " + " | ".join(errors_log))
             
             clean_text = re.sub(r"^```(?:json)?\s*", "", text_response, flags=re.IGNORECASE)
             clean_text = re.sub(r"\s*```$", "", clean_text).strip()
