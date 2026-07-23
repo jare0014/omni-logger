@@ -401,7 +401,9 @@ class OCRLogger:
             data = json.loads(clean_text)
             
             # Post-processing specifically for Lumosity nested scores validation
-            if self.meta.get("id") == "lumosity" or self.template_name.lower() == "lumosity":
+            if "lumosity" in str(self.meta.get("id", "")).lower() or self.template_name.lower() == "lumosity":
+                if "start_time" in data:
+                    del data["start_time"]
                 raw_scores = data.get("scores", [])
                 scores = []
                 for s in raw_scores:
