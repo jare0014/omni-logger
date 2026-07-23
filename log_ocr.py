@@ -177,12 +177,56 @@ def update_dataview_generic(content, new_data):
             
     return "\n".join(lines) + ("\n" if content.endswith("\n") else "")
 
-def update_append_log_generic(content, new_data):
-    lines = content.rstrip().splitlines()
-    lines.append("")
-    for k, v in new_data.items():
-        lines.append(f"{k}: {v}")
-    return "\n".join(lines) + "\n"
+def fetch_clipboard_image():
+    import io
+    import subprocess
+
+    # 1. Try PIL ImageGrab
+    try:
+        from PIL import ImageGrab, Image
+        data = ImageGrab.grabclipboard()
+        if isinstance(data, Image.Image):
+            buf = io.BytesIO()
+            data.save(buf, format="PNG")
+            return buf.getvalue(), "image/png"
+        elif isinstance(data, list) and data:
+            first = data[0]
+            if os.path.exists(first) and first.lower().endswith(('.png', '.jpg', '.jpeg', '.webp', '.bmp')):
+                mime = "image/png"
+                if first.lower().endswith(('.jpg', '.jpeg')):
+                    mime = "image/jpeg"
+                elif first.lower().endswith('.webp'):
+                    mime = "image/webp"
+                elif first.lower().endswith('.bmp'):
+                    mime = "image/bmp"
+                with open(first, "rb") as f:
+                    return f.read(), mime
+    except Exception as e:
+        print("PIL grabclipboard warning:", e)
+
+    # 2. Try PowerShell System.Windows.Forms.Clipboard fallback
+    try:
+        temp_png = os.path.join(os.environ.get("TEMP", r"C:\Windows\Temp"), "omni_clipboard_temp.png")
+        if os.path.exists(temp_png):
+            try:
+                os.remove(temp_png)
+            except Exception:
+                pass
+        ps_cmd = f'Add-Type -AssemblyName System.Windows.Forms; $img = [System.Windows.Forms.Clipboard]::GetImage(); if ($img) {{ $img.Save("{temp_png.replace("\\", "/")}", [System.Drawing.Imaging.ImageFormat]::Png) }}'
+        subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", ps_cmd], capture_output=True, timeout=5)
+        if os.path.exists(temp_png):
+            with open(temp_png, "rb") as f:
+                img_bytes = f.read()
+            try:
+                os.remove(temp_png)
+            except Exception:
+                pass
+            if img_bytes:
+                return img_bytes, "image/png"
+    except Exception as e:
+        print("PowerShell clipboard fallback warning:", e)
+
+    return None, "image/png"
 
 class OCRLogger:
     def __init__(self, template_dir, file_path, image_path=None):
@@ -230,39 +274,15 @@ class OCRLogger:
             self.process_image(self.image_path)
             return
 
+        # Check clipboard before Tkinter initialization
+        img_bytes, mime_type = fetch_clipboard_image()
+        if img_bytes:
+            print("Successfully retrieved image from clipboard!")
+
         # Hide root window
         self.root = tk.Tk()
         self.root.attributes('-topmost', True)
         self.root.withdraw()
-        
-        # Check clipboard automatically
-        from PIL import ImageGrab, Image
-        import io
-        
-        img_bytes = None
-        mime_type = "image/png"
-        
-        try:
-            clipboard_data = ImageGrab.grabclipboard()
-            if isinstance(clipboard_data, Image.Image):
-                buf = io.BytesIO()
-                clipboard_data.save(buf, format="PNG")
-                img_bytes = buf.getvalue()
-                print("Found image in clipboard, processing automatically...")
-            elif isinstance(clipboard_data, list) and clipboard_data:
-                first_file = clipboard_data[0]
-                if os.path.exists(first_file) and first_file.lower().endswith(('.png', '.jpg', '.jpeg', '.webp', '.bmp')):
-                    with open(first_file, "rb") as f:
-                        img_bytes = f.read()
-                    if first_file.lower().endswith(('.jpg', '.jpeg')):
-                        mime_type = "image/jpeg"
-                    elif first_file.lower().endswith('.webp'):
-                        mime_type = "image/webp"
-                    elif first_file.lower().endswith('.bmp'):
-                        mime_type = "image/bmp"
-                    print(f"Found image file {os.path.basename(first_file)} in clipboard, processing automatically...")
-        except Exception as e:
-            print(f"Error checking clipboard: {e}")
 
         img_path = None
         if img_bytes is None:
