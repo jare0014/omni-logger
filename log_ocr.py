@@ -153,23 +153,26 @@ def update_dataview_generic(content, new_data):
                 
     missing_keys = [k for k in new_data.keys() if k not in keys_updated]
     if missing_keys:
-        log_header_idx = -1
+        header_idx = -1
         for idx, l in enumerate(lines):
-            if "## 🪵 Log" in l:
-                log_header_idx = idx
+            if "### Work Logs" in l:
+                header_idx = idx
                 break
+        if header_idx == -1:
+            for idx, l in enumerate(lines):
+                if "## 🪵 Log" in l or "## 🪵 Logs" in l:
+                    header_idx = idx
+                    break
                 
-        insert_lines = []
-        for k in missing_keys:
-            insert_lines.append(f"{k}:: {new_data[k]}")
+        insert_lines = [f"{k}:: {new_data[k]}" for k in missing_keys]
             
-        if log_header_idx != -1:
-            lines.insert(log_header_idx + 1, "")
+        if header_idx != -1:
+            lines.insert(header_idx + 1, "")
             for line in reversed(insert_lines):
-                lines.insert(log_header_idx + 2, line)
+                lines.insert(header_idx + 2, line)
         else:
             lines.append("")
-            lines.append("## 🪵 Log")
+            lines.append("### Work Logs")
             lines.extend(insert_lines)
             
     return "\n".join(lines) + ("\n" if content.endswith("\n") else "")

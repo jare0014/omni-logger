@@ -3200,7 +3200,10 @@ Ensure only valid JSON is output, and no debug or extra text is printed.`;
         
         const missingKeys = keys.filter(k => !updatedKeys.has(k));
         if (missingKeys.length > 0) {
-            let logHeaderIndex = lines.findIndex(l => l.includes('## 🪵 Log'));
+            let logHeaderIndex = lines.findIndex(l => l.includes('### Work Logs'));
+            if (logHeaderIndex === -1) {
+                logHeaderIndex = lines.findIndex(l => l.includes('## 🪵 Log') || l.includes('## 🪵 Logs'));
+            }
             const insertLines = [];
             for (const k of missingKeys) {
                 let val = data[k];
@@ -3211,7 +3214,7 @@ Ensure only valid JSON is output, and no debug or extra text is printed.`;
             if (logHeaderIndex !== -1) {
                 lines.splice(logHeaderIndex + 1, 0, "", ...insertLines);
             } else {
-                lines.push("", "## 🪵 Log", ...insertLines);
+                lines.push("", "### Work Logs", ...insertLines);
             }
         }
         
