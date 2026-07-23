@@ -7168,7 +7168,7 @@ class OmniFoodLoggerModal extends obsidian.Modal {
                 const info = row.createDiv();
                 const title = info.createEl('div', { text: `${item.name} (${item.unit})`, style: 'font-weight:bold;' });
                 const detail = info.createEl('div', { 
-                    text: `ID: ${item.id} | Category: ${item.category} | ${item.water_ml ? Math.round(item.water_ml * 0.033814 * 10) / 10 + ' fl oz (' + item.water_ml + ' ml) ' : ''}${item.calories ? item.calories + ' kcal ' : ''}${item.protein_g ? item.protein_g + 'g prot ' : ''}${item.caffeine_mg ? item.caffeine_mg + 'mg caff ' : ''}${item.alcohol_g ? item.alcohol_g + 'g alc ' : ''}`, 
+                    text: `ID: ${item.id} | Category: ${item.category} | ${item.water_ml ? Math.round(item.water_ml * 0.033814 * 10) / 10 + ' fl oz ' : ''}${item.calories ? item.calories + ' kcal ' : ''}${item.protein_g ? item.protein_g + 'g prot ' : ''}${item.caffeine_mg ? item.caffeine_mg + 'mg caff ' : ''}${item.alcohol_g ? item.alcohol_g + 'g alc ' : ''}`, 
                     style: 'font-size:0.85em; color:var(--text-muted);' 
                 });
 
