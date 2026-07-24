@@ -94,6 +94,11 @@ def norm_key(k):
     return re.sub(r'[\s_]+', '', str(k).lower())
 
 def update_frontmatter_generic(content, new_data):
+    # Check for Focus Log Lumosity start time in note body
+    focus_match = re.search(r"\[focus::\s*Lumosity\]\s*\[start-time::\s*(\d{1,2}:\d{2})", content, re.IGNORECASE)
+    if focus_match:
+        new_data["Lumosity Start Time"] = focus_match.group(1)
+
     # Normalize key lookup dictionary
     key_map = {}
     for k, v in new_data.items():
