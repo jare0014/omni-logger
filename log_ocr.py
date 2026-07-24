@@ -90,16 +90,30 @@ def format_yaml_value(val, indent=2):
             lines.append(f"{' ' * indent}{k}: {v}")
     return "\n".join(lines)
 
+def norm_key(k):
+    return re.sub(r'[\s_]+', '', str(k).lower())
+
 def update_frontmatter_generic(content, new_data):
+    # Normalize key lookup dictionary
+    key_map = {}
+    for k, v in new_data.items():
+        nk = norm_key(k)
+        if ("lumosity" in nk and "time" in nk) or nk in ["start_time", "starttime", "time"]:
+            key_map["lumositystarttime"] = ("Lumosity Start Time", v)
+        elif nk in ["scores", "gamescores", "lumosityscores"]:
+            key_map["scores"] = ("scores", v)
+        else:
+            key_map[nk] = (k, v)
+
     match = re.match(r"^---\r?\n(.*?)\r?\n---", content, re.DOTALL)
     if not match:
         fm_lines = ["---"]
-        for k, v in new_data.items():
+        for nk, (orig_k, v) in key_map.items():
             if isinstance(v, (list, dict)):
-                fm_lines.append(f"{k}:")
+                fm_lines.append(f"{orig_k}:")
                 fm_lines.append(format_yaml_value(v, indent=2))
             else:
-                fm_lines.append(f'{k}: "{v}"')
+                fm_lines.append(f'{orig_k}: "{v}"')
         fm_lines.append("---")
         return "\n".join(fm_lines) + "\n\n" + content
         
@@ -113,15 +127,17 @@ def update_frontmatter_generic(content, new_data):
         line = lines[idx]
         if line.strip() and not line.startswith(" ") and not line.startswith("-") and ":" in line:
             parts = line.split(":", 1)
-            key = parts[0].strip()
-            if key in new_data:
-                val = new_data[key]
+            raw_key = parts[0].strip()
+            nk = norm_key(raw_key)
+            
+            if nk in key_map:
+                target_key, val = key_map[nk]
                 if isinstance(val, (list, dict)):
-                    new_lines.append(f"{key}:")
+                    new_lines.append(f"{raw_key}:")
                     new_lines.append(format_yaml_value(val, indent=2))
                 else:
-                    new_lines.append(f'{key}: "{val}"')
-                keys_updated.add(key)
+                    new_lines.append(f'{raw_key}: "{val}"')
+                keys_updated.add(nk)
                 idx += 1
                 while idx < len(lines) and (lines[idx].startswith(" ") or lines[idx].startswith("-")):
                     idx += 1
@@ -129,13 +145,13 @@ def update_frontmatter_generic(content, new_data):
         new_lines.append(line)
         idx += 1
         
-    for k, v in new_data.items():
-        if k not in keys_updated:
+    for nk, (orig_k, v) in key_map.items():
+        if nk not in keys_updated:
             if isinstance(v, (list, dict)):
-                new_lines.append(f"{k}:")
+                new_lines.append(f"{orig_k}:")
                 new_lines.append(format_yaml_value(v, indent=2))
             else:
-                new_lines.append(f'{k}: "{v}"')
+                new_lines.append(f'{orig_k}: "{v}"')
                 
     new_fm_text = "\n".join(new_lines)
     return f"---\n{new_fm_text}\n---" + content[match.end():]
@@ -402,8 +418,6 @@ class OCRLogger:
             
             # Post-processing specifically for Lumosity nested scores validation
             if "lumosity" in str(self.meta.get("id", "")).lower() or self.template_name.lower() == "lumosity":
-                if "start_time" in data:
-                    del data["start_time"]
                 raw_scores = data.get("scores", [])
                 scores = []
                 for s in raw_scores:
