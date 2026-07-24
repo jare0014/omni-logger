@@ -94,21 +94,8 @@ def norm_key(k):
     return re.sub(r'[\s_]+', '', str(k).lower())
 
 def update_frontmatter_generic(content, new_data):
-    # Check for Focus Log Lumosity start time in note body
-    focus_match = re.search(r"\[focus::\s*Lumosity\]\s*\[start-time::\s*(\d{1,2}:\d{2})", content, re.IGNORECASE)
-    if focus_match:
-        new_data["Lumosity Start Time"] = focus_match.group(1)
-
-    # Normalize key lookup dictionary
-    key_map = {}
-    for k, v in new_data.items():
-        nk = norm_key(k)
-        if ("lumosity" in nk and "time" in nk) or nk in ["start_time", "starttime", "time"]:
-            key_map["lumositystarttime"] = ("Lumosity Start Time", v)
-        elif nk in ["scores", "gamescores", "lumosityscores"]:
-            key_map["scores"] = ("scores", v)
-        else:
-            key_map[nk] = (k, v)
+    # Normalize key lookup dictionary for flexible matching against existing frontmatter
+    key_map = {norm_key(k): (k, v) for k, v in new_data.items()}
 
     match = re.match(r"^---\r?\n(.*?)\r?\n---", content, re.DOTALL)
     if not match:
