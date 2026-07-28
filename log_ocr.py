@@ -155,33 +155,58 @@ def update_dataview_generic(content, new_data):
     for idx in range(len(lines)):
         line_strip = lines[idx].strip()
         for k, v in new_data.items():
-            if line_strip.startswith(f"{k}::"):
-                lines[idx] = f"{k}:: {v}"
+            pattern = r'^([-*\s]*' + re.escape(str(k)) + r'::\s*)(.*)$'
+            m = re.match(pattern, line_strip, re.IGNORECASE)
+            if m:
+                prefix = m.group(1)
+                lines[idx] = f"{prefix}{v}"
                 keys_updated.add(k)
                 
     missing_keys = [k for k in new_data.keys() if k not in keys_updated]
     if missing_keys:
         header_idx = -1
+        target_headers = [
+            "### Work Logs", "## 🛠️ Work Logs", "## 🪵 Work Logs", "### Work", 
+            "## Work", "## 🛠️ Work & Projects", "## 🪵 Log", "## 🪵 Logs", "### Work Log"
+        ]
         for idx, l in enumerate(lines):
-            if "### Work Logs" in l:
+            l_strip = l.strip()
+            if any(h.lower() == l_strip.lower() for h in target_headers) or any(h.lower() in l_strip.lower() for h in ["work log", "work logs", "work & project"]):
                 header_idx = idx
                 break
-        if header_idx == -1:
-            for idx, l in enumerate(lines):
-                if "## 🪵 Log" in l or "## 🪵 Logs" in l:
-                    header_idx = idx
-                    break
                 
-        insert_lines = [f"{k}:: {new_data[k]}" for k in missing_keys]
+        insert_lines = [f"- {k}:: {new_data[k]}" for k in missing_keys]
             
         if header_idx != -1:
-            lines.insert(header_idx + 1, "")
+            next_header_idx = len(lines)
+            for idx in range(header_idx + 1, len(lines)):
+                if lines[idx].strip().startswith("#"):
+                    next_header_idx = idx
+                    break
+            
+            insert_pos = next_header_idx
+            while insert_pos > header_idx + 1 and lines[insert_pos - 1].strip() == "":
+                insert_pos -= 1
+                
             for line in reversed(insert_lines):
-                lines.insert(header_idx + 2, line)
+                lines.insert(insert_pos, line)
         else:
-            lines.append("")
-            lines.append("### Work Logs")
-            lines.extend(insert_lines)
+            log_section_idx = -1
+            for idx, line in enumerate(lines):
+                if "## 🪵 Log" in line or "## 🪵 Logs" in line:
+                    log_section_idx = idx
+                    break
+                    
+            if log_section_idx != -1:
+                lines.insert(log_section_idx + 1, "")
+                lines.insert(log_section_idx + 2, "### Work Logs")
+                for idx, line in enumerate(insert_lines):
+                    lines.insert(log_section_idx + 3 + idx, line)
+            else:
+                if lines and lines[-1].strip() != "":
+                    lines.append("")
+                lines.append("### Work Logs")
+                lines.extend(insert_lines)
             
     return "\n".join(lines) + ("\n" if content.endswith("\n") else "")
 
