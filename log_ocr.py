@@ -185,6 +185,99 @@ def update_dataview_generic(content, new_data):
             
     return "\n".join(lines) + ("\n" if content.endswith("\n") else "")
 
+def update_append_log_generic(content, new_data):
+    """
+    Appends OCR extracted items to a dedicated section (e.g. Work Logs or Daily Log) in the daily note.
+    """
+    import datetime
+    timestamp_str = datetime.datetime.now().strftime("%H:%M")
+    
+    entry_lines = []
+    if isinstance(new_data, dict):
+        if "summary" in new_data:
+            entry_lines.append(f"- **[{timestamp_str}] Work Log**: {new_data['summary']}")
+            for k, v in new_data.items():
+                if k != "summary" and v:
+                    clean_k = k.replace("_", " ").title()
+                    if isinstance(v, list):
+                        entry_lines.append(f"  - **{clean_k}**:")
+                        for item in v:
+                            entry_lines.append(f"    - {item}")
+                    elif isinstance(v, dict):
+                        entry_lines.append(f"  - **{clean_k}**:")
+                        for subk, subv in v.items():
+                            entry_lines.append(f"    - **{subk.replace('_', ' ').title()}**: {subv}")
+                    else:
+                        entry_lines.append(f"  - **{clean_k}**: {v}")
+        else:
+            entry_lines.append(f"- **[{timestamp_str}] Work Log**:")
+            for k, v in new_data.items():
+                clean_k = k.replace("_", " ").title()
+                if isinstance(v, list):
+                    entry_lines.append(f"  - **{clean_k}**:")
+                    for item in v:
+                        entry_lines.append(f"    - {item}")
+                elif isinstance(v, dict):
+                    entry_lines.append(f"  - **{clean_k}**:")
+                    for subk, subv in v.items():
+                        entry_lines.append(f"    - **{subk.replace('_', ' ').title()}**: {subv}")
+                else:
+                    entry_lines.append(f"  - **{clean_k}**: {v}")
+    elif isinstance(new_data, list):
+        entry_lines.append(f"- **[{timestamp_str}] Work Log**:")
+        for item in new_data:
+            entry_lines.append(f"  - {item}")
+    else:
+        entry_lines.append(f"- **[{timestamp_str}] Work Log**: {str(new_data)}")
+        
+    lines = content.splitlines()
+    
+    target_headers = [
+        "### Work Logs", "## 🛠️ Work Logs", "## 🪵 Work Logs", "### Work", 
+        "## Work", "## 🛠️ Work & Projects", "## 🪵 Log", "## 🪵 Logs", "### Work Log"
+    ]
+    
+    header_idx = -1
+    for idx, line in enumerate(lines):
+        line_clean = line.strip()
+        if any(h.lower() == line_clean.lower() for h in target_headers) or any(h.lower() in line_clean.lower() for h in ["work log", "work logs", "work & project"]):
+            header_idx = idx
+            break
+            
+    if header_idx != -1:
+        next_header_idx = len(lines)
+        for idx in range(header_idx + 1, len(lines)):
+            if lines[idx].strip().startswith("#"):
+                next_header_idx = idx
+                break
+        
+        insert_pos = next_header_idx
+        while insert_pos > header_idx + 1 and lines[insert_pos - 1].strip() == "":
+            insert_pos -= 1
+            
+        for line in reversed(entry_lines):
+            lines.insert(insert_pos, line)
+    else:
+        # Check if there is a general logs section
+        log_section_idx = -1
+        for idx, line in enumerate(lines):
+            if "## 🪵 Log" in line or "## 🪵 Logs" in line:
+                log_section_idx = idx
+                break
+                
+        if log_section_idx != -1:
+            lines.insert(log_section_idx + 1, "")
+            lines.insert(log_section_idx + 2, "### Work Logs")
+            for idx, line in enumerate(entry_lines):
+                lines.insert(log_section_idx + 3 + idx, line)
+        else:
+            if lines and lines[-1].strip() != "":
+                lines.append("")
+            lines.append("### Work Logs")
+            lines.extend(entry_lines)
+            
+    return "\n".join(lines) + ("\n" if content.endswith("\n") else "")
+
 def fetch_clipboard_image():
     import io
     import subprocess
