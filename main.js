@@ -361,7 +361,7 @@ class OmniLoggerPlugin extends obsidian.Plugin {
                 const frontmatter = cache?.frontmatter || {};
                 
                 const inlineData = {};
-                const inlineRegex = /^([a-zA-Z0-9_\-]+)::\s*(.+)$/gm;
+                const inlineRegex = /^\s*(?:[-*+]\s+(?:\[[ xX]\]\s+)?)?([a-zA-Z0-9_\-]+)::\s*(.+)$/gm;
                 let match;
                 while ((match = inlineRegex.exec(content)) !== null) {
                     inlineData[match[1].trim()] = match[2].trim();
@@ -838,7 +838,7 @@ class OmniLoggerPlugin extends obsidian.Plugin {
             const frontmatter = cache?.frontmatter || {};
             
             const inlineData = {};
-            const inlineRegex = /^([a-zA-Z0-9_\-]+)::\s*(.+)$/gm;
+            const inlineRegex = /^\s*(?:[-*+]\s+(?:\[[ xX]\]\s+)?)?([a-zA-Z0-9_\-]+)::\s*(.+)$/gm;
             let match;
             while ((match = inlineRegex.exec(content)) !== null) {
                 inlineData[match[1].trim()] = match[2].trim();
@@ -1647,7 +1647,7 @@ class OmniLoggerPlugin extends obsidian.Plugin {
                 }
                 
                 const content = await this.app.vault.read(file);
-                const inlineRegex = /^([a-zA-Z0-9_\-]+)::\s*(.+)$/gm;
+                const inlineRegex = /^\s*(?:[-*+]\s+(?:\[[ xX]\]\s+)?)?([a-zA-Z0-9_\-]+)::\s*(.+)$/gm;
                 let match;
                 while ((match = inlineRegex.exec(content)) !== null) {
                     keys.add(match[1].trim());
@@ -3192,11 +3192,14 @@ Ensure only valid JSON is output, and no debug or extra text is printed.`;
         
         for (let i = 0; i < lines.length; i++) {
             const lineTrim = lines[i].trim();
+            const cleanLine = lineTrim.replace(/^[-*+]\s+(?:\[[ xX]\]\s+)?/, '').trim();
             for (const key of keys) {
-                if (lineTrim.startsWith(`${key}::`)) {
+                if (cleanLine.startsWith(`${key}::`) || lineTrim.startsWith(`${key}::`)) {
                     let val = data[key];
                     if (typeof val === 'object') val = JSON.stringify(val);
-                    lines[i] = `${key}:: ${val}`;
+                    const bulletMatch = lineTrim.match(/^([-*+]\s+(?:\[[ xX]\]\s+)?)/);
+                    const prefix = bulletMatch ? bulletMatch[1] : '';
+                    lines[i] = `${prefix}${key}:: ${val}`;
                     updatedKeys.add(key);
                 }
             }
@@ -3253,10 +3256,14 @@ Ensure only valid JSON is output, and no debug or extra text is printed.`;
         let updated = false;
         
         for (let i = 0; i < lines.length; i++) {
+            const lineTrim = lines[i].trim();
+            const cleanLine = lineTrim.replace(/^[-*+]\s+(?:\[[ xX]\]\s+)?/, '').trim();
             for (const k of keys) {
-                if (lines[i].trim().startsWith(`${k}::`)) {
+                if (cleanLine.startsWith(`${k}::`) || lineTrim.startsWith(`${k}::`)) {
                     const val = calls_dict[k] !== undefined ? calls_dict[k] : 0;
-                    lines[i] = `${k}:: ${val}`;
+                    const bulletMatch = lineTrim.match(/^([-*+]\s+(?:\[[ xX]\]\s+)?)/);
+                    const prefix = bulletMatch ? bulletMatch[1] : '';
+                    lines[i] = `${prefix}${k}:: ${val}`;
                     updated = true;
                 }
             }
@@ -3398,9 +3405,11 @@ Ensure only valid JSON is output, and no debug or extra text is printed.`;
         }
         
         for (const [key, val] of Object.entries(updates)) {
-            const pattern = new RegExp(`^\\s*${this.escapeRegex(key)}::.*$`, 'm');
-            if (pattern.test(bodyPart)) {
-                bodyPart = bodyPart.replace(pattern, `${key}:: ${val}`);
+            const pattern = new RegExp(`^(\\s*(?:[-*+]\\s+(?:\\[[ xX]\\]\\s+)?)?)${this.escapeRegex(key)}::.*$`, 'm');
+            const match = bodyPart.match(pattern);
+            if (match) {
+                const prefix = match[1] || '';
+                bodyPart = bodyPart.replace(pattern, `${prefix}${key}:: ${val}`);
             } else {
                 bodyPart = bodyPart.trim() + `\n${key}:: ${val}\n`;
             }

@@ -155,7 +155,7 @@ def update_dataview_generic(content, new_data):
     for idx in range(len(lines)):
         line_strip = lines[idx].strip()
         for k, v in new_data.items():
-            pattern = r'^([-*\s]*' + re.escape(str(k)) + r'::\s*)(.*)$'
+            pattern = r'^(\s*(?:[-*+]\s+(?:\[[ xX]\]\s+)?)?' + re.escape(str(k)) + r'::\s*)(.*)$'
             m = re.match(pattern, line_strip, re.IGNORECASE)
             if m:
                 prefix = m.group(1)

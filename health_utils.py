@@ -196,9 +196,11 @@ def update_dataview_fields(content, updates):
         body_part = content
         
     for key, val in updates.items():
-        pattern = re.compile(rf"^\s*{re.escape(key)}::.*$", re.MULTILINE)
-        if pattern.search(body_part):
-            body_part = pattern.sub(f"{key}:: {val}", body_part)
+        pattern = re.compile(rf"^(\s*(?:[-*+]\s+(?:\[[ xX]\]\s+)?)?){re.escape(key)}::.*$", re.MULTILINE)
+        m = pattern.search(body_part)
+        if m:
+            prefix = m.group(1) or ""
+            body_part = pattern.sub(f"{prefix}{key}:: {val}", body_part)
         else:
             body_part = body_part.rstrip() + f"\n{key}:: {val}\n"
             
