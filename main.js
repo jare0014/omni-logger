@@ -1981,13 +1981,19 @@ class OmniLoggerPlugin extends obsidian.Plugin {
             }
             
             // Todoist
-            const tokenVal = await this.app.secretStorage.getSecret('timeblocker-todoist-token') || "";
+            let tokenVal = await this.app.secretStorage.getSecret('schedule-assistant-todoist-token') || "";
+            if (!tokenVal) {
+                tokenVal = await this.app.secretStorage.getSecret('timeblocker-todoist-token') || "";
+            }
+            if (!tokenVal && saPlugin && saPlugin.settings && saPlugin.settings.todoistToken) {
+                tokenVal = saPlugin.settings.todoistToken;
+            }
             if (!tokenVal) {
                 statuses.todoist = { name: 'Todoist API', ok: false, msg: 'Missing Token' };
             } else {
                 try {
                     const res = await requestWithTimeout({
-                        url: `https://api.todoist.com/api/v1/tasks?limit=1`,
+                        url: `https://api.todoist.com/rest/v2/tasks?limit=1`,
                         method: 'GET',
                         headers: { 'Authorization': `Bearer ${tokenVal}` }
                     });
