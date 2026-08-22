@@ -2490,17 +2490,18 @@ class OmniLoggerPlugin extends obsidian.Plugin {
                 const alcoholConsumptionLogs = data.alcoholConsumptionLogs || [];
                 
                 const result = {};
+                let caffeineMg = 0;
+                let proteinGrams = 0;
+                let totalCalories = 0;
+                let totalAlcoholGrams = 0;
                 
                 if (nutritionLogs.length > 0) {
-                    let caffeineMg = 0;
-                    let proteinGrams = 0;
-                    let totalCalories = 0;
-                    
                     for (const pt of nutritionLogs) {
                         const log = pt.nutritionLog || pt.value || {};
                         const energyKcal = log.energy?.kcal || log.energy?.kilocalories || 0;
                         totalCalories += energyKcal;
                         
+                        let itemHasAlcohol = false;
                         const nutrients = log.nutrients || [];
                         for (const n of nutrients) {
                             const name = (n.nutrient || "").toUpperCase();
@@ -2513,22 +2514,35 @@ class OmniLoggerPlugin extends obsidian.Plugin {
                             } else if (name === "ENERGY" || name === "CALORIES") {
                                 const kcal = n.quantity?.kcal || n.quantity?.kilocalories || n.quantity?.calories || 0;
                                 totalCalories += kcal;
+                            } else if (name === "ALCOHOL" || name === "ALCOHOL_GRAMS" || name === "ETHANOL") {
+                                totalAlcoholGrams += grams;
+                                itemHasAlcohol = true;
+                            }
+                        }
+
+                        const foodName = (log.foodDisplayName || log.foodName || log.name || "").toLowerCase();
+                        if (!itemHasAlcohol && /(?:bourbon|whiskey|whisky|beer|wine|vodka|rum|tequila|gin|cocktail|ipa|lager|ale|stout|cider|scotch|brandy|sake|mezcal)/i.test(foodName)) {
+                            if (energyKcal > 0) {
+                                totalAlcoholGrams += (energyKcal / 7.0);
+                            } else {
+                                totalAlcoholGrams += 14;
                             }
                         }
                     }
-                    result.caffeine = Math.round(caffeineMg);
-                    result.protein = Math.round(proteinGrams);
-                    result.calories = Math.round(totalCalories);
+                    if (caffeineMg > 0) result.caffeine = Math.round(caffeineMg);
+                    if (proteinGrams > 0) result.protein = Math.round(proteinGrams);
+                    if (totalCalories > 0) result.calories = Math.round(totalCalories);
                 }
                 
                 if (alcoholConsumptionLogs.length > 0) {
-                    let alcoholMg = 0;
                     for (const pt of alcoholConsumptionLogs) {
                         const log = pt.alcoholConsumption || pt.value || {};
-                        const grams = log.quantity?.grams || log.grams || 0;
-                        alcoholMg += grams * 1000;
+                        const grams = log.quantity?.grams || log.grams || log.amount || 0;
+                        totalAlcoholGrams += grams;
                     }
-                    result.alcohol = Math.round(alcoholMg);
+                }
+                if (totalAlcoholGrams > 0) {
+                    result.alcohol = Math.round(totalAlcoholGrams);
                 }
                 
                 return result;
@@ -2542,26 +2556,36 @@ class OmniLoggerPlugin extends obsidian.Plugin {
     async fetchPayloadForTemplate(t) {
         if (t.connectionId === 'google-health') {
             const token = await this.getGoogleAccessToken();
-            const now = new Date();
-            const startTime = new Date();
-            startTime.setDate(now.getDate() - 1);
+            
+            const dailyFile = this.getDailyNoteFile();
+            let dateStr = "";
+            if (dailyFile && /^\d{4}-\d{2}-\d{2}/.test(dailyFile.basename)) {
+                dateStr = dailyFile.basename.match(/^\d{4}-\d{2}-\d{2}/)[0];
+            }
+            if (!dateStr) {
+                const now = new Date();
+                const year = now.getFullYear();
+                const month = String(now.getMonth() + 1).padStart(2, '0');
+                const day = String(now.getDate()).padStart(2, '0');
+                dateStr = `${year}-${month}-${day}`;
+            }
+
+            const targetDate = new Date(`${dateStr}T12:00:00`);
+            const startTime = new Date(targetDate);
+            startTime.setDate(startTime.getDate() - 1);
             startTime.setHours(12, 0, 0, 0);
-            const endTime = new Date();
+            const endTime = new Date(targetDate);
             endTime.setHours(12, 0, 0, 0);
             
             const startIso = startTime.toISOString();
             const endIso = endTime.toISOString();
             
+            const now = new Date();
             const localTzOffset = -now.getTimezoneOffset();
             const localTzSign = localTzOffset >= 0 ? '+' : '-';
             const localTzHours = String(Math.floor(Math.abs(localTzOffset) / 60)).padStart(2, '0');
             const localTzMins = String(Math.abs(localTzOffset) % 60).padStart(2, '0');
             const localTz = `${localTzSign}${localTzHours}:${localTzMins}`;
-            
-            const year = now.getFullYear();
-            const month = String(now.getMonth() + 1).padStart(2, '0');
-            const day = String(now.getDate()).padStart(2, '0');
-            const dateStr = `${year}-${month}-${day}`;
             
             const dayStartIso = `${dateStr}T00:00:00${localTz}`;
             const dayEndIso = `${dateStr}T23:59:59${localTz}`;
@@ -2569,7 +2593,12 @@ class OmniLoggerPlugin extends obsidian.Plugin {
             // which sort incorrectly against a "-05:00"-style boundary string.
             const dayStartMs = new Date(dayStartIso).getTime();
             const dayEndMs = new Date(dayEndIso).getTime();
-            const inDayRange = (timeStr) => {
+            const inDayRange = (timeStr, intervalObj = null) => {
+                if (intervalObj && intervalObj.civilStartTime && intervalObj.civilStartTime.date) {
+                    const cd = intervalObj.civilStartTime.date;
+                    const cStr = `${cd.year}-${String(cd.month).padStart(2, '0')}-${String(cd.day).padStart(2, '0')}`;
+                    if (cStr === dateStr) return true;
+                }
                 if (!timeStr) return false;
                 const ms = new Date(timeStr).getTime();
                 return !isNaN(ms) && ms >= dayStartMs && ms <= dayEndMs;
@@ -2616,8 +2645,9 @@ class OmniLoggerPlugin extends obsidian.Plugin {
                         const response = await obsidian.requestUrl({ url: url, headers: { 'Authorization': `Bearer ${token}` } });
                         const points = response.json?.dataPoints || [];
                         hydPoints.push(...points.filter(pt => {
-                            const timeStr = pt.hydrationLog?.interval?.startTime || pt.value?.interval?.startTime || "";
-                            return inDayRange(timeStr);
+                            const interval = pt.hydrationLog?.interval || pt.value?.interval || pt.interval;
+                            const timeStr = interval?.startTime || "";
+                            return inDayRange(timeStr, interval);
                         }));
                         if (response.json?.nextPageToken) {
                             url = hydUrl + "?pageSize=1000&pageToken=" + response.json.nextPageToken;
@@ -2641,8 +2671,9 @@ class OmniLoggerPlugin extends obsidian.Plugin {
                         const resNut = await obsidian.requestUrl({ url: url, headers: { 'Authorization': `Bearer ${token}` } });
                         const points = resNut.json?.dataPoints || [];
                         nutPoints.push(...points.filter(pt => {
-                            const timeStr = pt.nutritionLog?.interval?.startTime || pt.value?.interval?.startTime || "";
-                            return inDayRange(timeStr);
+                            const interval = pt.nutritionLog?.interval || pt.value?.interval || pt.interval;
+                            const timeStr = interval?.startTime || "";
+                            return inDayRange(timeStr, interval);
                         }));
                         if (resNut.json?.nextPageToken) {
                             url = nutritionUrl + "?pageSize=1000&pageToken=" + resNut.json.nextPageToken;
@@ -2660,8 +2691,9 @@ class OmniLoggerPlugin extends obsidian.Plugin {
                         const resAlc = await obsidian.requestUrl({ url: url, headers: { 'Authorization': `Bearer ${token}` } });
                         const points = resAlc.json?.dataPoints || [];
                         alcPoints.push(...points.filter(pt => {
-                            const timeStr = pt.alcoholConsumption?.interval?.startTime || pt.value?.interval?.startTime || "";
-                            return inDayRange(timeStr);
+                            const interval = pt.alcoholConsumption?.interval || pt.value?.interval || pt.interval;
+                            const timeStr = interval?.startTime || "";
+                            return inDayRange(timeStr, interval);
                         }));
                         if (resAlc.json?.nextPageToken) {
                             url = alcUrl + "?pageSize=1000&pageToken=" + resAlc.json.nextPageToken;
