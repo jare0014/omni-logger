@@ -1863,12 +1863,10 @@ class OmniLoggerPlugin extends obsidian.Plugin {
 
     async checkAllConnections() {
         const statuses = {
-            gemini: { name: 'Gemini API', ok: false, msg: 'Not checked' },
+            gemini: { name: 'Gemini API', ok: true, msg: 'Not active' },
             ollama: { name: 'Ollama Server', ok: true, msg: 'Not active' },
-            googleHealth: { name: 'Google Health API', ok: false, msg: 'Not checked' },
-            googleWorkspace: { name: 'Google Calendar/Tasks', ok: false, msg: 'Not checked' },
-            todoist: { name: 'Todoist API', ok: false, msg: 'Not checked' },
-            notebooklm: { name: 'NotebookLM CLI', ok: false, msg: 'Not checked' }
+            openai: { name: 'OpenAI API', ok: true, msg: 'Not active' },
+            googleHealth: { name: 'Google Health API', ok: true, msg: 'Not enabled' }
         };
 
         const requestWithTimeout = async (params, timeoutMs = 2500) => {
@@ -1879,13 +1877,16 @@ class OmniLoggerPlugin extends obsidian.Plugin {
         };
         
         // 1. Gemini
+        const isGeminiActive = (this.settings.templateProvider === 'gemini' || this.settings.executorProvider === 'gemini');
         let geminiKey = await this.getSecret(this.settings.geminiApiKeyId || 'omni-logger-gemini-api-key', 'geminiApiKey');
         if (!geminiKey) {
             geminiKey = await this.getSecret('timeblocker-gemini-api-key', 'geminiApiKey');
         }
-        if (!geminiKey) {
+        if (!geminiKey && !isGeminiActive) {
+            statuses.gemini = { name: 'Gemini API', ok: true, msg: 'Not Active / Optional' };
+        } else if (!geminiKey && isGeminiActive) {
             statuses.gemini = { name: 'Gemini API', ok: false, msg: 'Missing Key' };
-        } else {
+        } else if (geminiKey) {
             try {
                 const res = await requestWithTimeout({
                     url: `https://generativelanguage.googleapis.com/v1beta/models?key=${geminiKey}`,
@@ -1897,13 +1898,15 @@ class OmniLoggerPlugin extends obsidian.Plugin {
                     statuses.gemini = { name: 'Gemini API', ok: false, msg: 'Invalid Key' };
                 }
             } catch(e) {
-                statuses.gemini = { name: 'Gemini API', ok: false, msg: 'Connection Error / Timeout' };
+                statuses.gemini = { name: 'Gemini API', ok: isGeminiActive ? false : true, msg: 'Connection Error / Timeout' };
             }
         }
         
         // 2. Ollama
         const useOllama = (this.settings.templateProvider === 'ollama' || this.settings.executorProvider === 'ollama');
-        if (useOllama) {
+        if (!useOllama) {
+            statuses.ollama = { name: 'Ollama Server', ok: true, msg: 'Not Active / Optional' };
+        } else {
             const ollamaUrl = this.settings.ollamaUrl || 'http://localhost:11434';
             try {
                 const res = await requestWithTimeout({
@@ -1919,17 +1922,41 @@ class OmniLoggerPlugin extends obsidian.Plugin {
                 statuses.ollama = { name: 'Ollama Server', ok: false, msg: 'Offline / Timeout' };
             }
         }
+
+        // 3. OpenAI
+        const isOpenAIActive = (this.settings.templateProvider === 'openai' || this.settings.executorProvider === 'openai');
+        let openaiKey = await this.getSecret(this.settings.openaiApiKeyId || 'omni-logger-openai-api-key', 'openaiApiKey');
+        if (!openaiKey && !isOpenAIActive) {
+            statuses.openai = { name: 'OpenAI API', ok: true, msg: 'Not Active / Optional' };
+        } else if (!openaiKey && isOpenAIActive) {
+            statuses.openai = { name: 'OpenAI API', ok: false, msg: 'Missing Key' };
+        } else if (openaiKey) {
+            try {
+                const res = await requestWithTimeout({
+                    url: `https://api.openai.com/v1/models`,
+                    method: 'GET',
+                    headers: { 'Authorization': `Bearer ${openaiKey}` }
+                });
+                if (res.status === 200) {
+                    statuses.openai = { name: 'OpenAI API', ok: true, msg: 'Connected' };
+                } else {
+                    statuses.openai = { name: 'OpenAI API', ok: false, msg: 'Invalid Key' };
+                }
+            } catch(e) {
+                statuses.openai = { name: 'OpenAI API', ok: isOpenAIActive ? false : true, msg: 'Connection Error / Timeout' };
+            }
+        }
         
-        // 3. Google Health (Omni-Logger)
+        // 4. Google Health (Omni-Logger / Standalone Health Connect)
         const fs = require('fs');
         const path = require('path');
         const vaultPath = this.app.vault.adapter.getBasePath();
         const sep = vaultPath.includes('/') ? '/' : '\\';
         const healthTokenPath = `${vaultPath}${sep}.obsidian${sep}plugins${sep}omni-logger${sep}token.json`;
+        const standaloneHealthTokenPath = `${vaultPath}${sep}.obsidian${sep}plugins${sep}health-connect-readiness${sep}token.json`;
+        
         if (this.settings.dataSourceApi === 'google-health') {
-            if (!fs.existsSync(healthTokenPath)) {
-                statuses.googleHealth = { name: 'Google Health API', ok: false, msg: 'Disconnected' };
-            } else {
+            if (fs.existsSync(healthTokenPath) || fs.existsSync(standaloneHealthTokenPath)) {
                 try {
                     const token = await this.getGoogleAccessToken();
                     const now = new Date();
@@ -1950,99 +1977,11 @@ class OmniLoggerPlugin extends obsidian.Plugin {
                 } catch(e) {
                     statuses.googleHealth = { name: 'Google Health API', ok: false, msg: 'Auth Error / Timeout' };
                 }
+            } else {
+                statuses.googleHealth = { name: 'Google Health API', ok: false, msg: 'Disconnected' };
             }
         } else {
             statuses.googleHealth = { name: 'Google Health API', ok: true, msg: 'Not Enabled' };
-        }
-        
-        // 4. Google Workspace & 5. Todoist (Schedule Assistant)
-        const schedulePlugin = this.app.plugins.getPlugin('schedule-assistant-focus-timer');
-        if (schedulePlugin) {
-            // Google Workspace
-            const scheduleTokenPath = `${vaultPath}${sep}.obsidian${sep}plugins${sep}schedule-assistant-focus-timer${sep}token.json`;
-            if (!fs.existsSync(scheduleTokenPath)) {
-                statuses.googleWorkspace = { name: 'Google Calendar/Tasks', ok: false, msg: 'Disconnected' };
-            } else {
-                try {
-                    const token = await schedulePlugin.getGoogleAccessToken();
-                    const res = await requestWithTimeout({
-                        url: `https://www.googleapis.com/tasks/v1/users/@me/lists`,
-                        method: 'GET',
-                        headers: { 'Authorization': `Bearer ${token}` }
-                    });
-                    if (res.status === 200) {
-                        statuses.googleWorkspace = { name: 'Google Calendar/Tasks', ok: true, msg: 'Connected' };
-                    } else {
-                        statuses.googleWorkspace = { name: 'Google Calendar/Tasks', ok: false, msg: 'Auth Expired / Error' };
-                    }
-                } catch(e) {
-                    statuses.googleWorkspace = { name: 'Google Calendar/Tasks', ok: false, msg: 'Auth Error / Timeout' };
-                }
-            }
-            
-            // Todoist
-            let tokenVal = await this.app.secretStorage.getSecret('schedule-assistant-todoist-token') || "";
-            if (!tokenVal) {
-                tokenVal = await this.app.secretStorage.getSecret('timeblocker-todoist-token') || "";
-            }
-            if (!tokenVal && saPlugin && saPlugin.settings && saPlugin.settings.todoistToken) {
-                tokenVal = saPlugin.settings.todoistToken;
-            }
-            if (!tokenVal) {
-                statuses.todoist = { name: 'Todoist API', ok: false, msg: 'Missing Token' };
-            } else {
-                try {
-                    const res = await requestWithTimeout({
-                        url: `https://api.todoist.com/rest/v2/tasks?limit=1`,
-                        method: 'GET',
-                        headers: { 'Authorization': `Bearer ${tokenVal}` }
-                    });
-                    if (res.status === 200) {
-                        statuses.todoist = { name: 'Todoist API', ok: true, msg: 'Connected' };
-                    } else {
-                        statuses.todoist = { name: 'Todoist API', ok: false, msg: 'Invalid Token' };
-                    }
-                } catch(e) {
-                    statuses.todoist = { name: 'Todoist API', ok: false, msg: 'Offline / Timeout' };
-                }
-            }
-        } else {
-            statuses.googleWorkspace = { name: 'Google Calendar/Tasks', ok: true, msg: 'Plugin Disabled' };
-            statuses.todoist = { name: 'Todoist API', ok: true, msg: 'Plugin Disabled' };
-        }
-        
-        // 6. NotebookLM (Knowledge Pipeline)
-        const kpPlugin = this.app.plugins.getPlugin('knowledge-pipeline');
-        if (kpPlugin) {
-            const sessionJson = await this.app.secretStorage.getSecret('knowledge-pipeline-notebooklm-session') || '';
-            if (!sessionJson) {
-                statuses.notebooklm = { name: 'NotebookLM CLI', ok: true, msg: 'Not Logged In' };
-            } else {
-                try {
-                    const child_process = require('child_process');
-                    const env = Object.assign({}, process.env, { NOTEBOOKLM_AUTH_JSON: sessionJson });
-                    const notebooklmCmd = (kpPlugin && typeof kpPlugin.getNotebooklmCmd === 'function') ? kpPlugin.getNotebooklmCmd() : 'notebooklm';
-                    const isOk = await new Promise((resolve) => {
-                        child_process.exec(`"${notebooklmCmd}" list --json`, { env: env, timeout: 10000 }, (err, stdout, stderr) => {
-                            const output = (stdout || '') + (stderr || '');
-                            if (err || output.toLowerCase().includes('not logged in') || output.toLowerCase().includes('expired')) {
-                                resolve(false);
-                            } else {
-                                resolve(true);
-                            }
-                        });
-                    });
-                    if (isOk) {
-                        statuses.notebooklm = { name: 'NotebookLM CLI', ok: true, msg: 'Connected' };
-                    } else {
-                        statuses.notebooklm = { name: 'NotebookLM CLI', ok: false, msg: 'Session Expired' };
-                    }
-                } catch(e) {
-                    statuses.notebooklm = { name: 'NotebookLM CLI', ok: false, msg: 'Offline / Timeout' };
-                }
-            }
-        } else {
-            statuses.notebooklm = { name: 'NotebookLM CLI', ok: true, msg: 'Plugin Disabled' };
         }
         
         // Compute active alerts
