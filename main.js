@@ -1227,8 +1227,22 @@ class OmniLoggerPlugin extends obsidian.Plugin {
                         }
                         const absoluteDailyPath = path.join(vaultPath, dailyFile.path);
                         
-                        new obsidian.Notice(`Starting OCR sync for ${t.name}...`);
-                        this.runPythonScript('log_ocr.py', `--template-dir "${absoluteTemplatePath}" --file "${absoluteDailyPath}"`);
+                        const isLumosity = cmdId === 'lumosity' || cmdId === 'custom-lumosity' || String(t.id).toLowerCase().includes('lumosity') || String(t.name).toLowerCase().includes('lumosity');
+                        
+                        if (isLumosity) {
+                            try {
+                                window.open("https://app.lumosity.com/stats?tab=training", "_blank");
+                            } catch (e) {
+                                console.warn("Failed to open Lumosity URL:", e);
+                            }
+                            new LumosityPromptModal(this.app, () => {
+                                new obsidian.Notice(`Starting OCR sync for ${t.name}...`);
+                                this.runPythonScript('log_ocr.py', `--template-dir "${absoluteTemplatePath}" --file "${absoluteDailyPath}"`);
+                            }).open();
+                        } else {
+                            new obsidian.Notice(`Starting OCR sync for ${t.name}...`);
+                            this.runPythonScript('log_ocr.py', `--template-dir "${absoluteTemplatePath}" --file "${absoluteDailyPath}"`);
+                        }
                     } else if (t.mode === 'api') {
                         new obsidian.Notice(`Syncing API connection for ${t.name}...`);
                         this.syncApiTemplate(t.id);
@@ -7966,6 +7980,51 @@ class ManageKeysModal extends obsidian.Modal {
             new obsidian.Notice(`Added ${val} to available keys pool!`);
             this.onOpen();
             if (this.onUpdate) this.onUpdate();
+        };
+    }
+
+    onClose() {
+        this.contentEl.empty();
+    }
+}
+
+class LumosityPromptModal extends obsidian.Modal {
+    constructor(app, onProceed) {
+        super(app);
+        this.onProceed = onProceed;
+    }
+
+    onOpen() {
+        const { contentEl } = this;
+        contentEl.empty();
+        contentEl.addClass("omni-lumosity-modal");
+
+        contentEl.createEl("h2", { text: "🧩 Lumosity Brain Training Sync" });
+
+        const infoBox = contentEl.createDiv({ style: "background: var(--background-secondary); border-radius: 8px; padding: 12px 16px; margin-bottom: 16px; border-left: 4px solid var(--interactive-accent);" });
+        infoBox.createEl("p", { 
+            text: "🌐 Opening https://app.lumosity.com/stats?tab=training in your browser...",
+            style: "margin: 0 0 6px 0; font-weight: 500; color: var(--text-normal);"
+        });
+        infoBox.createEl("p", { 
+            text: "Once you have copied your training stats (or captured a screenshot) to the clipboard, click the button below to parse and log the scores to your daily note.",
+            style: "margin: 0; color: var(--text-muted); font-size: 0.9em; line-height: 1.4;"
+        });
+
+        const btnContainer = contentEl.createDiv({ style: "display: flex; justify-content: flex-end; gap: 10px; margin-top: 20px;" });
+        
+        const cancelBtn = btnContainer.createEl("button", { text: "Cancel" });
+        cancelBtn.onclick = () => this.close();
+
+        const okBtn = btnContainer.createEl("button", { 
+            text: "📋 Stats Copied — Proceed", 
+            cls: "mod-cta" 
+        });
+        okBtn.onclick = () => {
+            this.close();
+            if (typeof this.onProceed === 'function') {
+                this.onProceed();
+            }
         };
     }
 
